@@ -33,3 +33,32 @@ targets:
         CLANG_WARN_DOCUMENTATION_COMMENTS: NO
         ONLY_ACTIVE_ARCH: NO
         ARCHS: arm64
+
+  dovipoc:
+    type: application
+    platform: iOS
+    sources:
+      - path: dovi
+        includes:
+          - main.m
+        excludes:
+          - Info.plist
+      - path: dovi
+        includes:
+          - "*.bin"
+        buildPhase: resources
+    info:
+      path: dovi/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.you.dovipoc
+        PRODUCT_NAME: dovipoc
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        CLANG_ENABLE_OBJC_ARC: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_BITCODE: NO
+        ONLY_ACTIVE_ARCH: NO
+        ARCHS: arm64
