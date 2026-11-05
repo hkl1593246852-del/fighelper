@@ -16,3 +16,7 @@
 // Function entry is then either a pacibsp or the tonemap prologue
 //   sub sp, sp, #0x380                0xD10E03FF
 int qcRun(void);
+
+// CoreMedia side: locate the DV metadata write site, dump a window for offline
+// frame analysis, so the RPU INDEX can be recomputed for this build.
+int cmRun(void);

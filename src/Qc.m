@@ -140,3 +140,84 @@ writeout:
         writeToFile:[gQcDocs stringByAppendingPathComponent:@"qc.log"] atomically:YES];
     return 0;
 }
+
+#pragma mark - CoreMedia side of the payload
+
+// The RPU payload is built against CoreMedia's parser frame, not QuartzCore:
+//   craft_l8_pivot_l10_stack INPUT OUTPUT [INDEX FIRST SECOND]
+//   INDEX = number of L10 records (default 42), i.e. which record overruns.
+// Upstream evidence for 27.1, inside the DV metadata writer:
+//   0x18ec66ef8  mov   w10, #0x7338        array base
+//   0x18ec66f00  mov   w11, #0x1c           record stride
+//   0x18ec66f04  umull x8, w8, w11          index * stride
+//   0x18ec66f08  add   x23, x8, #4
+//   0x18ec66f0c  addpt x11, x10, x23
+//   0x18ec66f10  strb  w9, [x11]            the overflow store
+// Locating that site on this build gives the array base and stride; dumping a
+// window around it lets the frame layout be recovered offline.
+int cmRun(void) {
+    gQcDocs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    if (gQcLines == nil) gQcLines = [NSMutableArray array];
+    NSString *outDir = [gQcDocs stringByAppendingPathComponent:@"out"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:outDir
+                             withIntermediateDirectories:YES attributes:nil error:nil];
+
+    qcNote(@"=== cm start ===");
+
+    void *cm = dlopen("/System/Library/Frameworks/CoreMedia.framework/CoreMedia", RTLD_NOW);
+    if (cm == NULL) { qcNote(@"dlopen CoreMedia failed: %s", dlerror()); goto cmdone; }
+
+    // Any symbol inside the framework gives us the image base.
+    void *sym = dlsym(cm, "CMTimeMake");
+    Dl_info info;
+    if (sym == NULL || dladdr(sym, &info) == 0 || info.dli_fbase == NULL) {
+        qcNote(@"cm dladdr failed"); goto cmdone;
+    }
+    const struct mach_header_64 *h = (const struct mach_header_64 *)info.dli_fbase;
+    if (h->magic != MH_MAGIC_64) { qcNote(@"cm bad magic"); goto cmdone; }
+    qcNote(@"cm base=%p uuid=%@", info.dli_fbase, uuidString(h));
+
+    const uint8_t *t = (const uint8_t *)info.dli_fbase;
+    uint64_t textVM = 0, textSize = 0;
+    const uint8_t *p = (const uint8_t *)(h + 1);
+    for (uint32_t i = 0; i < h->ncmds; i++) {
+        const struct load_command *lc = (const struct load_command *)p;
+        if (lc->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            if (strcmp(seg->segname, "__TEXT") == 0) { textVM = seg->vmaddr; textSize = seg->vmsize; break; }
+        }
+        p += lc->cmdsize;
+    }
+    if (textSize == 0) { qcNote(@"cm __TEXT missing"); goto cmdone; }
+    qcNote(@"cm __TEXT vmaddr=%#llx size=%#llx slide=%#llx",
+           textVM, textSize, (uint64_t)((uintptr_t)info.dli_fbase - textVM));
+
+    // umull x8, w8, w11 = 0x9BAB7D08 ; strb w9,[x11] = 0x39000169
+    NSUInteger site = 0;
+    for (NSUInteger off = 0; off + 16 < (NSUInteger)textSize; off += 4) {
+        if (wordAt(t, off) != 0x9BAB7D08u) continue;
+        if (wordAt(t, off + 12) != 0x39000169u) continue;
+        site = off;
+        break;
+    }
+    if (site == 0) { qcNote(@"cm: DV index write site not found"); goto cmdone; }
+    qcNote(@"cm SITE=%#llx", textVM + site);
+
+    // Dump a window so the frame can be analysed offline.
+    NSUInteger lo = (site > 0x1000) ? site - 0x1000 : 0;
+    NSUInteger hi = site + 0x1000;
+    if (hi > (NSUInteger)textSize) hi = (NSUInteger)textSize;
+    NSData *win = [NSData dataWithBytes:(t + lo) length:(hi - lo)];
+    NSString *name = @"cm_window.bin";
+    if ([win writeToFile:[outDir stringByAppendingPathComponent:name] atomically:YES]) {
+        qcNote(@"cm window %lu B -> out/%@ (vma %#llx .. %#llx)",
+               (unsigned long)win.length, name, textVM + lo, textVM + hi);
+    }
+
+cmdone:
+    qcNote(@"=== cm end ===");
+    NSString *out = [[gQcLines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+    [[out dataUsingEncoding:NSUTF8StringEncoding]
+        writeToFile:[gQcDocs stringByAppendingPathComponent:@"qc.log"] atomically:YES];
+    return 0;
+}
