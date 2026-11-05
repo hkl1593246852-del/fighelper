@@ -2,6 +2,7 @@
 #import "Fig.h"
 #import "Sbx.h"
 #import "Kc.h"
+#import "Qc.h"
 
 @interface AppDelegate ()
 @property (nonatomic, strong) UILabel *status;
@@ -60,8 +61,10 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
 
         int rc2 = sbxRun();
         int rc3 = kcRun();
-        [self show:[NSString stringWithFormat:@"sbx=%d  kc=%d\n%@", rc2, rc3,
-                    headOf([docs stringByAppendingPathComponent:@"kc.log"], 18)]];
+        int rc4 = qcRun();
+        [self show:[NSString stringWithFormat:@"sbx=%d kc=%d qc=%d\n%@",
+                    rc2, rc3, rc4,
+                    headOf([docs stringByAppendingPathComponent:@"qc.log"], 16)]];
 
         int rc1 = figRun();
         [self show:[NSString stringWithFormat:
