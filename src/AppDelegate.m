@@ -1,4 +1,8 @@
-#import <Foundation/Foundation.h>
+#import "AppDelegate.h"
+#import "Fig.h"
+#import "Sbx.h"
+#import "Kc.h"
+#import "Qc.h"
 #import "BuildInfo.h"
 
 @interface AppDelegate ()
