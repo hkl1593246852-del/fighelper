@@ -19,6 +19,12 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Stamp build id
+        run: |
+          SHORT=$(git rev-parse --short=8 HEAD)
+          printf '#ifndef BUILD_INFO_H\n#define BUILD_INFO_H\n#define FIG_BUILD_ID "%s"\n#endif\n' "$SHORT" > src/BuildInfo.h
+          cat src/BuildInfo.h
+
       - name: Generate Xcode project
         run: |
           xcodegen generate

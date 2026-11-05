@@ -1,8 +1,5 @@
-#import "AppDelegate.h"
-#import "Fig.h"
-#import "Sbx.h"
-#import "Kc.h"
-#import "Qc.h"
+#import <Foundation/Foundation.h>
+#import "BuildInfo.h"
 
 @interface AppDelegate ()
 @property (nonatomic, strong) UILabel *status;
@@ -26,7 +23,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
 
 - (void)show:(NSString *)text {
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.status.text = text;
+        self.status.text = [NSString stringWithFormat:@"build %@\n%@", FIG_BUILD_ID, text];
     });
 }
 
@@ -37,10 +34,10 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
     vc.view.backgroundColor = [UIColor systemBackgroundColor];
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    label.text = @"fighelper\nrunning sbxRun() ...";
+    label.text = [NSString stringWithFormat:@"build %@\nrunning ...", FIG_BUILD_ID];
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentLeft;
-    label.font = [UIFont monospacedSystemFontOfSize:7.5 weight:UIFontWeightRegular];
+    label.font = [UIFont monospacedSystemFontOfSize:8 weight:UIFontWeightRegular];
     label.adjustsFontSizeToFitWidth = YES;
     label.minimumScaleFactor = 0.6;
     label.translatesAutoresizingMaskIntoConstraints = NO;
@@ -66,14 +63,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
                     rc2, rc3, rc4,
                     headOf([docs stringByAppendingPathComponent:@"qc.log"], 16)]];
 
-        int rc1 = figRun();
-        [self show:[NSString stringWithFormat:
-                    @"sbx=%d fig=%d kc=%d\n--- kc.log ---\n%@\n-- sbx --\n%@",
-                    rc2, rc1, rc3,
-                    headOf([docs stringByAppendingPathComponent:@"kc.log"], 14),
-                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 12)]];
-
-        NSLog(@"[fig] sbxRun rc=%d figRun rc=%d kcRun rc=%d", rc2, rc1, rc3);
+        NSLog(@"[fig] %@ sbx=%d kc=%d qc=%d", FIG_BUILD_ID, rc2, rc3, rc4);
     });
     return YES;
 }
