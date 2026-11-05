@@ -433,23 +433,46 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
 @implementation ProbeAppDelegate
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    // Prove the process is alive even if the scene path never runs: a plain
-    // window with a big label, no Auto Layout, no AVFoundation.
-    UIWindow *probeWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    UIViewController *vc = [[UIViewController alloc] init];
-    vc.view.backgroundColor = [UIColor colorWithRed:0.10 green:0.35 blue:0.15 alpha:1.0];
+    // No scene lifecycle: the plist manifest never fired on 27.0.1 (the green
+    // banner proved the process was alive while willConnectToSession stayed
+    // silent), so the whole probe runs from here.
+    CGRect screen = [UIScreen mainScreen].bounds;
+    UIWindow *window = [[UIWindow alloc] initWithFrame:screen];
+    UIViewController *controller = [[UIViewController alloc] init];
+    controller.view.backgroundColor = UIColor.blackColor;
 
-    UILabel *banner = [[UILabel alloc] initWithFrame:CGRectMake(12, 80, [UIScreen mainScreen].bounds.size.width - 24, 200)];
-    banner.numberOfLines = 0;
-    banner.textColor = [UIColor whiteColor];
-    banner.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightBold];
-    banner.text = @"dovipoc booted\nwaiting for scene...";
-    [vc.view addSubview:banner];
+    AVSampleBufferDisplayLayer *surface = [AVSampleBufferDisplayLayer layer];
+    surface.frame = controller.view.bounds;
+    surface.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    @try {
+        surface.toneMapMode = CAToneMapModeIfSupported;
+    } @catch (__unused NSException *exception) {
+        ProbePrint(@"toneMapMode rejected");
+    }
 
-    probeWindow.rootViewController = vc;
-    [probeWindow makeKeyAndVisible];
-    self.probeWindow = probeWindow;
-    self.probeBanner = banner;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(12, 60, screen.size.width - 24, screen.size.height * 0.6)];
+    label.numberOfLines = 0;
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    label.text = @"dovipoc: building frame...";
+
+    window.rootViewController = controller;
+    [window makeKeyAndVisible];
+
+    // Build after the view has a size, then submit.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        surface.frame = controller.view.bounds;
+        [controller.view.layer addSublayer:surface];
+        [controller.view addSubview:label];
+
+        DoviLog([NSString stringWithFormat:@"bounds=%@ mode=%d",
+                 NSStringFromCGRect(controller.view.bounds), (int)SelectedPayloadMode()]);
+
+        NSString *result = SubmitRPUToWindowServer(surface);
+        ProbePrint(result);
+        label.text = result;
+    });
     return YES;
 }
 @end
