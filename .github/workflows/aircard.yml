@@ -1,0 +1,45 @@
+name: aircard
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/aircard.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone upstream
+        run: |
+          git clone --depth 1 https://github.com/0xjohnnydev/AirCard-iOS.git aircard
+          du -sh aircard
+          ls aircard
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          brew install xcodegen
+
+      - name: Build unsigned IPA
+        run: |
+          cd aircard
+          chmod +x build-ipa.sh
+          ./build-ipa.sh Release
+
+      - name: Verify payload
+        run: |
+          ls -l aircard/build/AirCard-iOS.ipa
+          unzip -l aircard/build/AirCard-iOS.ipa | head -n 20
+          shasum -a 256 aircard/build/AirCard-iOS.ipa | tee aircard/sha256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aircard-ipa
+          path: |
+            aircard/build/AirCard-iOS.ipa
+            aircard/sha256.txt
+          retention-days: 30
