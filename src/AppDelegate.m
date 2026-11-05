@@ -63,11 +63,12 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
         int rc2 = sbxRun();
         int rc3 = kcRun();
         int rc4 = qcRun();
-        [self show:[NSString stringWithFormat:@"sbx=%d kc=%d qc=%d\n%@",
-                    rc2, rc3, rc4,
-                    headOf([docs stringByAppendingPathComponent:@"qc.log"], 16)]];
+        int rc1 = figRun();
+        [self show:[NSString stringWithFormat:@"fig=%d sbx=%d kc=%d qc=%d\n%@",
+                    rc1, rc2, rc3, rc4,
+                    headOf([docs stringByAppendingPathComponent:@"qc.log"], 14)]];
 
-        NSLog(@"[fig] %@ sbx=%d kc=%d qc=%d", FIG_BUILD_ID, rc2, rc3, rc4);
+        NSLog(@"[fig] %@ fig=%d sbx=%d kc=%d qc=%d", FIG_BUILD_ID, rc1, rc2, rc3, rc4);
     });
     return YES;
 }
