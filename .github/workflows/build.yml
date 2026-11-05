@@ -45,15 +45,18 @@ jobs:
       - name: Diagnostics
         run: |
           OBJ=build/fighelper.build/Release-iphoneos/fighelper.build/Objects-normal/arm64
+          echo "== source identity =="
+          wc -c -l src/Fig.m
+          md5 -q src/Fig.m
+          echo "-- head --"; sed -n '1,6p' src/Fig.m
+          echo "-- tail --"; tail -n 6 src/Fig.m
           echo "== objects =="
           ls -l "$OBJ" | grep -E '\.o$' || true
-          echo "== Fig.o symbols =="
-          nm -m "$OBJ/Fig.o" 2>/dev/null | grep -E 'probe|takeFd|connectService|handshake|figRun' || true
-          echo "== Fig.o strings =="
+          echo "== Fig.o first strings =="
+          strings "$OBJ/Fig.o" | head -n 40
+          echo "== Fig.o strings hit count =="
           strings "$OBJ/Fig.o" | grep -cE 'STEP2|CreationURL|queue\.txt' || true
-          echo "== final binary symbols =="
-          nm -m "$APP_PATH/fighelper" 2>/dev/null | grep -E 'probe|takeFd|figRun' || true
-          echo "== final binary strings =="
+          echo "== final binary strings hit count =="
           strings "$APP_PATH/fighelper" | grep -cE 'STEP2|CreationURL|queue\.txt' || true
 
       - name: Package unsigned IPA
