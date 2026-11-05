@@ -1,5 +1,6 @@
 #import "AppDelegate.h"
 #import "Fig.h"
+#import "Sbx.h"
 
 @implementation AppDelegate
 
@@ -25,8 +26,9 @@
     [self.window makeKeyAndVisible];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int rc = figRun();
-        NSLog(@"[fig] figRun rc=%d", rc);
+        int rc1 = figRun();
+        int rc2 = sbxRun();
+        NSLog(@"[fig] figRun rc=%d sbxRun rc=%d", rc1, rc2);
     });
     return YES;
 }
