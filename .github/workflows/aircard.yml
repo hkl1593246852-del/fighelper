@@ -18,6 +18,41 @@ jobs:
           git clone --depth 1 https://github.com/0xjohnnydev/AirCard-iOS.git aircard
           du -sh aircard
           ls aircard
+          ls -R aircard/AirliftFFI.xcframework | head -n 30
+
+      - name: Repair xcframework Info.plist
+        run: |
+          # The repo ships the two slices but not the container Info.plist, so
+          # Xcode 16 refuses the dependency. Rebuild the manifest for a static
+          # library xcframework with an arm64 device slice and an arm64 sim slice.
+          cat > aircard/AirliftFFI.xcframework/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>AvailableLibraries</key>
+            <array>
+              <dict>
+                <key>LibraryIdentifier</key><string>ios-arm64</string>
+                <key>LibraryPath</key><string>libairlift_ffi.a</string>
+                <key>SupportedArchitectures</key><array><string>arm64</string></array>
+                <key>SupportedPlatform</key><string>ios</string>
+              </dict>
+              <dict>
+                <key>LibraryIdentifier</key><string>ios-arm64-simulator</string>
+                <key>LibraryPath</key><string>libairlift_ffi.a</string>
+                <key>SupportedArchitectures</key><array><string>arm64</string></array>
+                <key>SupportedPlatform</key><string>ios</string>
+                <key>SupportedPlatformVariant</key><string>simulator</string>
+              </dict>
+            </array>
+            <key>CFBundlePackageType</key><string>XFWK</string>
+            <key>XCFrameworkFormatVersion</key><string>1.0</string>
+          </dict>
+          </plist>
+          PLIST
+          sed -i '' 's/^          //' aircard/AirliftFFI.xcframework/Info.plist
+          plutil -lint aircard/AirliftFFI.xcframework/Info.plist
 
       - name: Toolchain
         run: |
