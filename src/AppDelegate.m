@@ -67,7 +67,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
         int rc1 = figRun();
         [self show:[NSString stringWithFormat:@"fig=%d sbx=%d kc=%d qc=%d cm=%d\n%@",
                     rc1, rc2, rc3, rc4, rc5,
-                    headOf([docs stringByAppendingPathComponent:@"qc.log"], 22)]];
+                    headOf([docs stringByAppendingPathComponent:@"cm.log"], 20)]];
 
         NSLog(@"[fig] %s fig=%d sbx=%d kc=%d qc=%d cm=%d", FIG_BUILD_ID, rc1, rc2, rc3, rc4, rc5);
     });

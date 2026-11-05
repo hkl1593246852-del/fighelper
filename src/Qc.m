@@ -218,6 +218,6 @@ cmdone:
     qcNote(@"=== cm end ===");
     NSString *out = [[gQcLines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     [[out dataUsingEncoding:NSUTF8StringEncoding]
-        writeToFile:[gQcDocs stringByAppendingPathComponent:@"qc.log"] atomically:YES];
+        writeToFile:[gQcDocs stringByAppendingPathComponent:@"cm.log"] atomically:YES];
     return 0;
 }
