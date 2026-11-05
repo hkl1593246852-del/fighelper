@@ -14,10 +14,12 @@ targets:
       - path: src
         excludes:
           - Info.plist
+          - fighelper.entitlements
     info:
       path: src/Info.plist
     settings:
       base:
+        CODE_SIGN_ENTITLEMENTS: src/fighelper.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.you.fighelper
         PRODUCT_NAME: fighelper
         CODE_SIGNING_ALLOWED: NO

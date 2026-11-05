@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 #import "Fig.h"
 #import "Sbx.h"
+#import "Kc.h"
 
 @interface AppDelegate ()
 @property (nonatomic, strong) UILabel *status;
@@ -58,16 +59,18 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
 
         int rc2 = sbxRun();
-        [self show:[NSString stringWithFormat:@"sbx=%d  %@", rc2,
-                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 34)]];
+        int rc3 = kcRun();
+        [self show:[NSString stringWithFormat:@"sbx=%d  kc=%d\n%@", rc2, rc3,
+                    headOf([docs stringByAppendingPathComponent:@"kc.log"], 18)]];
 
         int rc1 = figRun();
-        [self show:[NSString stringWithFormat:@"sbx=%d  fig=%d\n%@\n-- fig --\n%@",
-                    rc2, rc1,
-                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 22),
-                    headOf([docs stringByAppendingPathComponent:@"fig.log"], 4)]];
+        [self show:[NSString stringWithFormat:
+                    @"sbx=%d fig=%d kc=%d\n--- kc.log ---\n%@\n-- sbx --\n%@",
+                    rc2, rc1, rc3,
+                    headOf([docs stringByAppendingPathComponent:@"kc.log"], 14),
+                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 12)]];
 
-        NSLog(@"[fig] sbxRun rc=%d figRun rc=%d", rc2, rc1);
+        NSLog(@"[fig] sbxRun rc=%d figRun rc=%d kcRun rc=%d", rc2, rc1, rc3);
     });
     return YES;
 }
