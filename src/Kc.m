@@ -77,6 +77,29 @@ static void histogram(void) {
     for (NSString *g in [[groups allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         kcNote(@"    agrp %@ -> %@", g, groups[g]);
     }
+
+    // Write the full service index so specific targets can be chosen without
+    // guessing names, then show the busiest ones on screen.
+    NSArray *ordered = [services keysSortedByValueUsingComparator:^NSComparisonResult(id a, id b) {
+        return [b compare:a];
+    }];
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSString *s in ordered) {
+        [lines addObject:[NSString stringWithFormat:@"%3ld\t%@", (long)[services[s] integerValue], s]];
+    }
+    NSString *idx = [[lines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+    [[idx dataUsingEncoding:NSUTF8StringEncoding]
+        writeToFile:[gKcOut stringByAppendingPathComponent:@"kc_services.txt"] atomically:YES];
+    [gKcProduced addObject:@"kc_services.txt"];
+
+    NSUInteger show = MIN(ordered.count, (NSUInteger)18);
+    for (NSUInteger i = 0; i < show; i++) {
+        NSString *s = ordered[i];
+        kcNote(@"    svce %-44s %@", [s UTF8String], services[s]);
+    }
+    if (ordered.count > show) {
+        kcNote(@"    ... %lu more in out/kc_services.txt", (unsigned long)(ordered.count - show));
+    }
     CFRelease(out);
 }
 
