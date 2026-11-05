@@ -236,9 +236,17 @@ int sbxRun(void) {
         writeToFile:[gSbxOut stringByAppendingPathComponent:@"sbx_index.txt"] atomically:YES];
 
     NSMutableArray *sum = [NSMutableArray array];
-    [sum addObject:[NSString stringWithFormat:@"%lu ok / %lu attempts",
-                    (unsigned long)gSbxProduced.count, (unsigned long)gSbxSummary.count]];
-    [sum addObjectsFromArray:gSbxSummary];
+    NSMutableArray *okLines = [NSMutableArray array];
+    NSMutableArray *failLines = [NSMutableArray array];
+    for (NSString *line in gSbxSummary) {
+        if ([line hasPrefix:@"OK"]) [okLines addObject:line];
+        else [failLines addObject:line];
+    }
+    [sum addObject:[NSString stringWithFormat:@"%lu hit / %lu attempts (%lu artifacts)",
+                    (unsigned long)okLines.count, (unsigned long)gSbxSummary.count,
+                    (unsigned long)gSbxProduced.count]];
+    [sum addObjectsFromArray:okLines];
+    [sum addObjectsFromArray:failLines];
     NSString *sumText = [[sum componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     [[sumText dataUsingEncoding:NSUTF8StringEncoding]
         writeToFile:[gSbxDocs stringByAppendingPathComponent:@"sbx_summary.txt"] atomically:YES];

@@ -38,7 +38,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
     label.text = @"fighelper\nrunning sbxRun() ...";
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentLeft;
-    label.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
+    label.font = [UIFont monospacedSystemFontOfSize:7.5 weight:UIFontWeightRegular];
     label.adjustsFontSizeToFitWidth = YES;
     label.minimumScaleFactor = 0.6;
     label.translatesAutoresizingMaskIntoConstraints = NO;
@@ -59,7 +59,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
 
         int rc2 = sbxRun();
         [self show:[NSString stringWithFormat:@"sbx=%d  %@", rc2,
-                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 30)]];
+                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 34)]];
 
         int rc1 = figRun();
         [self show:[NSString stringWithFormat:@"sbx=%d  fig=%d\n%@\n-- fig --\n%@",
