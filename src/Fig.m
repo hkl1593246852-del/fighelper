@@ -95,7 +95,13 @@ static xpc_object_t sendSync(xpc_object_t msg) {
     xpc_connection_send_message_with_reply(gConn, msg,
         dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
         ^(xpc_object_t object) {
-            if (object != nil) reply = object;
+            if (object != nil) {
+                // The reply is only valid for the duration of this block, so take a +1
+                // before handing it back to the caller. Without this the caller holds a
+                // dangling pointer and the next xpc_get_type() traps on PAC (SIGTRAP).
+                xpc_retain(object);
+                reply = object;
+            }
             dispatch_semaphore_signal(sem);
         });
 
@@ -168,6 +174,7 @@ static BOOL handshake(void) {
     xpc_object_t r1 = sendSync(m1);
     if (r1 == nil || xpc_get_type(r1) != XPC_TYPE_DICTIONARY) {
         logLine(@"STEP3 rp1 reply is not a dictionary");
+        if (r1 != nil) xpc_release(r1);
         return NO;
     }
     logLine(@"STEP3 rp1 reply=dictionary");
@@ -177,10 +184,13 @@ static BOOL handshake(void) {
     if (fBasic(0x2e727032, 0, &m2) == 0 && m2 != nil) {
         xpc_object_t recip = nil;
         int32_t rs = fRecip(r1, m2, "mconf", &recip);
+        if (recip != nil) xpc_release(recip);
         xpc_object_t r2 = sendSync(m2);
         logLine(@"STEP3 rp2 recipSt=%d reply=%s",
                 rs, (r2 != nil && xpc_get_type(r2) == XPC_TYPE_DICTIONARY) ? "dict" : "other");
+        if (r2 != nil) xpc_release(r2);
     }
+    xpc_release(r1);
 
     // '.org' : memory origin begin / complete
     xpc_object_t om = nil;
@@ -197,9 +207,11 @@ static BOOL handshake(void) {
         ok = (origin != nil);
         logLine(@"STEP3 org beginSt=%d completeSt=%d origin=%s",
                 bs, cs, ok ? "true" : "false");
+        if (origin != nil) xpc_release(origin);
     } else {
         logLine(@"STEP3 org beginSt=%d reply missing", bs);
     }
+    if (orr != nil) xpc_release(orr);
     return ok;
 }
 
@@ -293,12 +305,14 @@ static void probe(NSString *tag, NSString *path) {
     }
     if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY) {
         logLine(@"PROBE[%@] reply is not a dictionary", tag);
+        xpc_release(reply);
         return;
     }
 
     xpc_object_t details = fVal(reply, "ByteStreamDetails");
     if (details == nil) {
         logLine(@"DENIED[%@] err=%lld path=%@", tag, fI64(reply, ".ErrorReturn"), path);
+        xpc_release(reply);
         return;
     }
 
@@ -313,6 +327,7 @@ static void probe(NSString *tag, NSString *path) {
     } else {
         logLine(@"STREAM[%@] no FileDescriptor in details", tag);
     }
+    xpc_release(reply);
 }
 
 #pragma mark - queue entry

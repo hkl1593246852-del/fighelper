@@ -26,9 +26,9 @@
     [self.window makeKeyAndVisible];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        int rc1 = figRun();
         int rc2 = sbxRun();
-        NSLog(@"[fig] figRun rc=%d sbxRun rc=%d", rc1, rc2);
+        int rc1 = figRun();
+        NSLog(@"[fig] sbxRun rc=%d figRun rc=%d", rc2, rc1);
     });
     return YES;
 }
