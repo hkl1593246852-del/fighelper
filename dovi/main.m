@@ -432,8 +432,27 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
     self.surfaceLayer.frame = controller.view.bounds;
     self.surfaceLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     self.surfaceLayer.toneMapMode = CAToneMapModeIfSupported;
-    self.surfaceLayer.preferredDynamicRange = CADynamicRangeStandard;
-    self.surfaceLayer.contentsHeadroom = 4.0;
+    // preferredDynamicRange / contentsHeadroom are iOS 27 API; resolve them at
+    // runtime so this file still builds against older SDKs (CI runs Xcode 16.4
+    // with the iOS 18.5 SDK). On 27 they exist and the KVC calls land.
+    if ([self.surfaceLayer respondsToSelector:NSSelectorFromString(@"setPreferredDynamicRange:")]) {
+        void *sym = dlsym(RTLD_DEFAULT, "CADynamicRangeStandard");
+        NSString *standard = sym == NULL ? nil : *(NSString *__strong *)sym;
+        if (standard != nil) {
+            @try {
+                [self.surfaceLayer setValue:standard forKey:@"preferredDynamicRange"];
+            } @catch (__unused NSException *exception) {
+                ProbePrint(@"preferredDynamicRange rejected");
+            }
+        }
+    }
+    if ([self.surfaceLayer respondsToSelector:NSSelectorFromString(@"setContentsHeadroom:")]) {
+        @try {
+            [self.surfaceLayer setValue:@4.0 forKey:@"contentsHeadroom"];
+        } @catch (__unused NSException *exception) {
+            ProbePrint(@"contentsHeadroom rejected");
+        }
+    }
     self.surfaceLayer.wantsExtendedDynamicRangeContent = NO;
     [controller.view.layer addSublayer:self.surfaceLayer];
 
