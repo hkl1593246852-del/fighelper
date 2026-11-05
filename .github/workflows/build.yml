@@ -64,13 +64,15 @@ jobs:
 
       - name: Package IPAs
         run: |
-          rm -rf Payload Payload2
-          mkdir -p Payload Payload2
-          cp -R "$F_APP" Payload/
-          cp -R "$D_APP" Payload2/
-          zip -qry fighelper-unsigned.ipa Payload
-          zip -qry dovipoc-unsigned.ipa Payload2
+          rm -rf stage1 stage2
+          mkdir -p stage1/Payload stage2/Payload
+          cp -R "$F_APP" stage1/Payload/
+          cp -R "$D_APP" stage2/Payload/
+          ( cd stage1 && zip -qry ../fighelper-unsigned.ipa Payload )
+          ( cd stage2 && zip -qry ../dovipoc-unsigned.ipa Payload )
           ls -l *.ipa
+          echo "== payload layout =="
+          unzip -l dovipoc-unsigned.ipa | head -n 12
           shasum -a 256 *.ipa | tee sha256.txt
 
       - uses: actions/upload-artifact@v4
