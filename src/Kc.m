@@ -1,15 +1,17 @@
-// Kc.m - keychain probe through securityd (SecItem), not through the database.
+// Kc.m - keychain probe through securityd (SecItem).
 //
-// Background: /private/var/Keychains/keychain-2.db opens with EPERM from a
-// sandboxed app, and our sandbox_extension work showed the file layer stays
-// closed. SecItem is a different door: securityd evaluates the caller's
-// keychain-access-groups instead of the file sandbox. A build carrying
-// "com.apple.token" in that array can ask for items outside its own prefix,
-// which is what the MConfPoC screenshot shows (genp 41 / inet 6 / cert 12 /
-// key 7 / ident 1).
+// Result of the first run on iPhone14,3 / 27.0.1:
+//   own   genp ok  n=119      <- far more than an app of our own should have
+//   own   key  ok  n=16
+//   token *    notfound n=0   <- "com.apple.token" grants nothing here
 //
-// This probe only counts. It reports which classes answer, and whether the
-// token group widens the result versus the app's own group.
+// 119 generic passwords only makes sense if the signing identity ends up with a
+// wildcard access group ($(AppIdentifierPrefix) -> TEAM.*), which would expose
+// every item created by any app signed with the same certificate. The attribute
+// kSecAttrAccessGroup ("agrp") names the owner of each item, so dumping it turns
+// the count into an answer.
+//
+// This build lists attributes only. Item data is not read.
 
 #import "Kc.h"
 
@@ -29,18 +31,22 @@ static void kcNote(NSString *fmt, ...) {
 
 static NSString *osName(OSStatus st) {
     switch (st) {
-        case errSecSuccess:              return @"ok";
-        case errSecItemNotFound:         return @"notfound";
-        case errSecInteractionNotAllowed:return @"interaction";
-        case errSecAuthFailed:           return @"authfailed";
-        case errSecMissingEntitlement:   return @"noent";
-        case errSecParam:                return @"param";
+        case errSecSuccess:               return @"ok";
+        case errSecItemNotFound:          return @"notfound";
+        case errSecInteractionNotAllowed: return @"locked";
+        case errSecAuthFailed:            return @"authfailed";
+        case errSecMissingEntitlement:    return @"noent";
         default:                          return [NSString stringWithFormat:@"%d", (int)st];
     }
 }
 
-// Access group name -> count. group == nil means "no kSecAttrAccessGroup key".
-static void countClass(NSString *label, CFStringRef cls, NSString *group) {
+static NSString *strOf(NSDictionary *d, CFStringRef key) {
+    id v = d[(__bridge id)key];
+    if (v == nil) return @"-";
+    return [v isKindOfClass:[NSString class]] ? v : [v description];
+}
+
+static void dumpClass(NSString *label, CFStringRef cls, NSString *group, NSUInteger cap) {
     NSMutableDictionary *q = [NSMutableDictionary dictionary];
     q[(__bridge id)kSecClass] = (__bridge id)cls;
     q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitAll;
@@ -49,14 +55,39 @@ static void countClass(NSString *label, CFStringRef cls, NSString *group) {
 
     CFTypeRef out = NULL;
     OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)q, &out);
-    NSUInteger n = 0;
-    if (st == errSecSuccess && out != NULL) {
-        CFTypeID t = CFGetTypeID(out);
-        if (t == CFArrayGetTypeID()) n = (NSUInteger)CFArrayGetCount((CFArrayRef)out);
-        CFRelease(out);
+    if (st != errSecSuccess || out == NULL || CFGetTypeID(out) != CFArrayGetTypeID()) {
+        kcNote(@"[%@] %-5s %@ n=0", group == nil ? @"own" : @"token", [label UTF8String],
+               osName(st));
+        if (out) CFRelease(out);
+        return;
     }
-    kcNote(@"%@ %-6s %-16s n=%lu", group == nil ? @"own  " : @"token",
-           [label UTF8String], [osName(st) UTF8String], (unsigned long)n);
+
+    CFArrayRef arr = (CFArrayRef)out;
+    CFIndex n = CFArrayGetCount(arr);
+    kcNote(@"[%@] %-5s ok n=%ld", group == nil ? @"own" : @"token", [label UTF8String], (long)n);
+
+    NSMutableDictionary *groups = [NSMutableDictionary dictionary];
+    for (CFIndex i = 0; i < n; i++) {
+        NSDictionary *d = (__bridge NSDictionary *)CFArrayGetValueAtIndex(arr, i);
+        if (![d isKindOfClass:[NSDictionary class]]) continue;
+        NSString *agrp = strOf(d, kSecAttrAccessGroup);
+        groups[agrp] = @([groups[agrp] integerValue] + 1);
+    }
+    NSArray *sorted = [[groups allKeys] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *g in sorted) {
+        kcNote(@"    agrp %-40s %@", [g UTF8String], groups[g]);
+    }
+
+    for (CFIndex i = 0; i < n && i < (CFIndex)cap; i++) {
+        NSDictionary *d = (__bridge NSDictionary *)CFArrayGetValueAtIndex(arr, i);
+        if (![d isKindOfClass:[NSDictionary class]]) continue;
+        kcNote(@"    #%03ld svce=%-24s acct=%-20s agrp=%@",
+               (long)i,
+               [strOf(d, kSecAttrService) UTF8String],
+               [strOf(d, kSecAttrAccount) UTF8String],
+               strOf(d, kSecAttrAccessGroup));
+    }
+    CFRelease(out);
 }
 
 int kcRun(void) {
@@ -65,27 +96,15 @@ int kcRun(void) {
 
     kcNote(@"=== kc start ===");
 
-    // Sanity: the database itself, which is expected to be denied.
     NSString *db = @"/private/var/Keychains/keychain-2.db";
     int fd = open([db UTF8String], O_RDONLY);
     kcNote(@"db open=%s errno=%d", fd >= 0 ? "ok" : "denied", fd >= 0 ? 0 : errno);
     if (fd >= 0) close(fd);
 
-    // Our own groups, then the token group.
-    NSArray *classes = @[
-        @[@"genp", (__bridge id)kSecClassGenericPassword],
-        @[@"inet", (__bridge id)kSecClassInternetPassword],
-        @[@"cert", (__bridge id)kSecClassCertificate],
-        @[@"key",  (__bridge id)kSecClassKey],
-        @[@"ident",(__bridge id)kSecClassIdentity],
-    ];
-
-    for (NSArray *c in classes) {
-        countClass(c[0], (__bridge CFStringRef)c[1], nil);
-    }
-    for (NSArray *c in classes) {
-        countClass(c[0], (__bridge CFStringRef)c[1], @"com.apple.token");
-    }
+    dumpClass(@"genp", kSecClassGenericPassword,   nil, 40);
+    dumpClass(@"key",  kSecClassKey,               nil, 20);
+    dumpClass(@"genp", kSecClassGenericPassword,   @"com.apple.token", 0);
+    dumpClass(@"inet", kSecClassInternetPassword,  @"com.apple.token", 0);
 
     NSString *text = [[gKcLines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     [[text dataUsingEncoding:NSUTF8StringEncoding]
