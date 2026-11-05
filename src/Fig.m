@@ -129,7 +129,8 @@ static BOOL resolveSymbols(void) {
     fI64    = (fn_i64)    dlsym(rtld, "xpc_dictionary_get_int64");
     fDupFd  = (fn_dupfd)  dlsym(rtld, "xpc_dictionary_dup_fd");
     fSetU64 = (fn_setu64) dlsym(rtld, "xpc_dictionary_set_uint64");
-    // ?????? iOS SDK ????????unavailable?????dlsym ??    fConnCreate = (fn_conncreate) dlsym(rtld, "xpc_connection_create_mach_service");
+    // Marked unavailable in the iOS SDK headers, so it is resolved through dlsym.
+    fConnCreate = (fn_conncreate) dlsym(rtld, "xpc_connection_create_mach_service");
 
     if (fBasic == nil || fBegin == nil || fComp == nil || fRecip == nil ||
         fSetURL == nil || fDupFd == nil || fVal == nil || fU64 == nil ||
