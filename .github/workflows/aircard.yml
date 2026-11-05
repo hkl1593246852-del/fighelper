@@ -59,6 +59,28 @@ jobs:
           xcodebuild -version
           brew install xcodegen
 
+      - name: Link the static lib by hand
+        run: |
+          # XcodeGen models the xcframework as a framework dependency, which only
+          # yields FRAMEWORK_SEARCH_PATHS. AirliftFFI is a static .a with a
+          # modulemap, so wire the search paths and -lairlift_ffi explicitly.
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("aircard/project.yml")
+          s = p.read_text()
+          s = s.replace("""    dependencies:
+      - framework: AirliftFFI.xcframework
+        embed: false
+""", "")
+          s = s.replace('        OTHER_LDFLAGS: "-lc++"',
+              '        OTHER_LDFLAGS: "-lairlift_ffi -lc++"\n'
+              '        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/AirliftFFI.xcframework/ios-arm64"\n'
+              '        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/AirliftFFI.xcframework/ios-arm64/Headers"\n'
+              '        HEADER_SEARCH_PATHS: "$(SRCROOT)/AirliftFFI.xcframework/ios-arm64/Headers"')
+          p.write_text(s)
+          print(s)
+          PY
+
       - name: Build unsigned IPA
         run: |
           cd aircard
