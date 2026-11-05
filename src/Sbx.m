@@ -27,6 +27,17 @@ extern void    sandbox_extension_release(int64_t handle);
 static NSString *gSbxDocs;
 static NSString *gSbxOut;
 static NSMutableArray *gSbxProduced;
+static NSMutableArray *gSbxSummary;
+
+// One line per attempt, fixed width so it reads well on a phone screen.
+static void sbxNote(NSString *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    [gSbxSummary addObject:s];
+    NSLog(@"[sbx] %@", s);
+}
 
 static void sbxLog(NSString *fmt, ...) {
     va_list ap;
@@ -63,8 +74,7 @@ static void tryList(NSString *tag, const char *linkPath) {
             if (dp == NULL) close(fd);
         }
         if (dp == NULL) {
-            sbxLog(@"DIR[%@] opendir EPERM=%d open/dir failed errno=%d (%s)",
-                   tag, e1, errno, strerror(errno));
+            sbxNote(@"FAIL %-16s opendir e%d open/dir e%d", [tag UTF8String], e1, errno);
             return;
         }
         sbxLog(@"DIR[%@] opendir failed (%d), open(O_DIRECTORY)+fdopendir ok", tag, e1);
@@ -83,13 +93,13 @@ static void tryList(NSString *tag, const char *linkPath) {
     NSArray *sorted = [names sortedArrayUsingSelector:@selector(compare:)];
     NSString *body = [[sorted componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     sbxPut([tag stringByAppendingString:@".dir"], [body dataUsingEncoding:NSUTF8StringEncoding]);
-    sbxLog(@"DIR[%@] entries=%lu", tag, (unsigned long)names.count);
+    sbxNote(@"OK   %-16s dir %lu entries", [tag UTF8String], (unsigned long)names.count);
 }
 
 static void tryRead(NSString *tag, const char *linkPath, int64_t size) {
     int fd = open(linkPath, O_RDONLY);
     if (fd < 0) {
-        sbxLog(@"READ[%@] open failed errno=%d (%s)", tag, errno, strerror(errno));
+        sbxNote(@"FAIL %-16s open e%d", [tag UTF8String], errno);
         return;
     }
     NSMutableData *all = [NSMutableData data];
@@ -101,7 +111,7 @@ static void tryRead(NSString *tag, const char *linkPath, int64_t size) {
     }
     close(fd);
     sbxPut([tag stringByAppendingString:@".bin"], all);
-    sbxLog(@"READ[%@] %lu bytes (stat size=%lld)", tag, (unsigned long)all.length, size);
+    sbxNote(@"OK   %-16s %lu B", [tag UTF8String], (unsigned long)all.length);
 }
 
 #pragma mark - one attempt
@@ -129,6 +139,7 @@ static void sbxOne(NSString *tag, NSString *target, BOOL dirMode) {
                                               [l UTF8String], 0);
     if (token == NULL) {
         sbxLog(@"ISSUE[%@] NULL (dirMode=%d)", tag, (int)dirMode);
+        sbxNote(@"FAIL %-16s issue=NULL", [tag UTF8String]);
         unlink([l UTF8String]);
         return;
     }
@@ -147,6 +158,7 @@ static void sbxOne(NSString *tag, NSString *target, BOOL dirMode) {
     struct stat st;
     if (stat([l UTF8String], &st) != 0) {
         sbxLog(@"STAT[%@] failed errno=%d (%s)", tag, errno, strerror(errno));
+        sbxNote(@"FAIL %-16s stat e%d", [tag UTF8String], errno);
     } else {
         // Metadata is readable for any path, even where opendir() is refused,
         // so always record it: this doubles as an exists/type/size oracle.
@@ -180,6 +192,7 @@ int sbxRun(void) {
     gSbxDocs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     gSbxOut = [gSbxDocs stringByAppendingPathComponent:@"out"];
     gSbxProduced = [NSMutableArray array];
+    gSbxSummary = [NSMutableArray array];
     [[NSFileManager defaultManager] createDirectoryAtPath:gSbxOut
                              withIntermediateDirectories:YES attributes:nil error:nil];
 
@@ -221,6 +234,14 @@ int sbxRun(void) {
     if (idx.length > 0) idx = [idx stringByAppendingString:@"\n"];
     [[idx dataUsingEncoding:NSUTF8StringEncoding]
         writeToFile:[gSbxOut stringByAppendingPathComponent:@"sbx_index.txt"] atomically:YES];
+
+    NSMutableArray *sum = [NSMutableArray array];
+    [sum addObject:[NSString stringWithFormat:@"%lu ok / %lu attempts",
+                    (unsigned long)gSbxProduced.count, (unsigned long)gSbxSummary.count]];
+    [sum addObjectsFromArray:gSbxSummary];
+    NSString *sumText = [[sum componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+    [[sumText dataUsingEncoding:NSUTF8StringEncoding]
+        writeToFile:[gSbxDocs stringByAppendingPathComponent:@"sbx_summary.txt"] atomically:YES];
 
     sbxLog(@"=== sbx end, %lu artifacts ===", (unsigned long)gSbxProduced.count);
     return 0;

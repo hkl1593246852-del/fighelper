@@ -8,14 +8,18 @@
 
 @implementation AppDelegate
 
-static NSString *tailOf(NSString *path, NSUInteger lines) {
+static NSString *headOf(NSString *path, NSUInteger lines) {
     NSString *s = [NSString stringWithContentsOfFile:path
                                             encoding:NSUTF8StringEncoding error:nil];
     if (s.length == 0) return @"(empty)";
     NSArray *all = [s componentsSeparatedByString:@"\n"];
-    NSUInteger n = MIN(lines, all.count);
-    NSRange r = NSMakeRange(all.count - n, n);
-    return [[all subarrayWithRange:r] componentsJoinedByString:@"\n"];
+    NSMutableArray *keep = [NSMutableArray array];
+    for (NSString *l in all) {
+        if (l.length == 0) continue;
+        [keep addObject:l];
+        if (keep.count >= lines) break;
+    }
+    return [keep componentsJoinedByString:@"\n"];
 }
 
 - (void)show:(NSString *)text {
@@ -34,13 +38,16 @@ static NSString *tailOf(NSString *path, NSUInteger lines) {
     label.text = @"fighelper\nrunning sbxRun() ...";
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentLeft;
-    label.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    label.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumScaleFactor = 0.6;
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [vc.view addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
-        [label.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:12],
-        [label.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor constant:-12],
-        [label.topAnchor constraintEqualToAnchor:vc.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [label.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor constant:6],
+        [label.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor constant:-6],
+        [label.topAnchor constraintEqualToAnchor:vc.view.safeAreaLayoutGuide.topAnchor constant:6],
+        [label.bottomAnchor constraintLessThanOrEqualToAnchor:vc.view.safeAreaLayoutGuide.bottomAnchor],
     ]];
     self.status = label;
 
@@ -51,14 +58,14 @@ static NSString *tailOf(NSString *path, NSUInteger lines) {
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
 
         int rc2 = sbxRun();
-        [self show:[NSString stringWithFormat:@"sbxRun rc=%d\n%@", rc2,
-                    tailOf([docs stringByAppendingPathComponent:@"sbx.log"], 12)]];
+        [self show:[NSString stringWithFormat:@"sbx=%d  %@", rc2,
+                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 30)]];
 
         int rc1 = figRun();
-        [self show:[NSString stringWithFormat:@"sbx=%d fig=%d\n--- sbx.log ---\n%@\n--- fig.log ---\n%@",
+        [self show:[NSString stringWithFormat:@"sbx=%d  fig=%d\n%@\n-- fig --\n%@",
                     rc2, rc1,
-                    tailOf([docs stringByAppendingPathComponent:@"sbx.log"], 8),
-                    tailOf([docs stringByAppendingPathComponent:@"fig.log"], 8)]];
+                    headOf([docs stringByAppendingPathComponent:@"sbx_summary.txt"], 22),
+                    headOf([docs stringByAppendingPathComponent:@"fig.log"], 4)]];
 
         NSLog(@"[fig] sbxRun rc=%d figRun rc=%d", rc2, rc1);
     });
