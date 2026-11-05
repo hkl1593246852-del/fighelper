@@ -27,7 +27,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
 
 - (void)show:(NSString *)text {
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.status.text = [NSString stringWithFormat:@"build %@\n%@", FIG_BUILD_ID, text];
+        self.status.text = [NSString stringWithFormat:@"build %s\n%@", FIG_BUILD_ID, text];
     });
 }
 
@@ -38,7 +38,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
     vc.view.backgroundColor = [UIColor systemBackgroundColor];
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    label.text = [NSString stringWithFormat:@"build %@\nrunning ...", FIG_BUILD_ID];
+    label.text = [NSString stringWithFormat:@"build %s\nrunning ...", FIG_BUILD_ID];
     label.numberOfLines = 0;
     label.textAlignment = NSTextAlignmentLeft;
     label.font = [UIFont monospacedSystemFontOfSize:8 weight:UIFontWeightRegular];
@@ -68,7 +68,7 @@ static NSString *headOf(NSString *path, NSUInteger lines) {
                     rc1, rc2, rc3, rc4,
                     headOf([docs stringByAppendingPathComponent:@"qc.log"], 14)]];
 
-        NSLog(@"[fig] %@ fig=%d sbx=%d kc=%d qc=%d", FIG_BUILD_ID, rc1, rc2, rc3, rc4);
+        NSLog(@"[fig] %s fig=%d sbx=%d kc=%d qc=%d", FIG_BUILD_ID, rc1, rc2, rc3, rc4);
     });
     return YES;
 }
