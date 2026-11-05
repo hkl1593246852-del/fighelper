@@ -20,10 +20,30 @@ static os_log_t ProbeLog(void) {
     return log;
 }
 
+static void DoviLog(NSString *message);
+
 static void ProbePrint(NSString *message) {
     fprintf(stderr, "DOVI-PROBE %s\n", message.UTF8String);
     fflush(stderr);
     os_log_fault(ProbeLog(), "%{public}@", message);
+    DoviLog(message);
+}
+
+// Append to Documents/dovi.log so the run can be read back over AFC even when
+// the UI shows nothing.
+static void DoviLog(NSString *message) {
+    static NSString *path;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        path = [docs stringByAppendingPathComponent:@"dovi.log"];
+        [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
+    });
+    NSString *line = [NSString stringWithFormat:@"%@\n", message];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    [fh seekToEndOfFile];
+    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
 }
 
 typedef NS_ENUM(NSUInteger, PayloadMode) {
@@ -400,6 +420,8 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
 }
 
 @interface ProbeAppDelegate : UIResponder <UIApplicationDelegate>
+@property(nonatomic, strong) UIWindow *probeWindow;
+@property(nonatomic, strong) UILabel *probeBanner;
 @end
 
 @interface ProbeSceneDelegate : UIResponder <UIWindowSceneDelegate>
@@ -411,6 +433,23 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
 @implementation ProbeAppDelegate
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    // Prove the process is alive even if the scene path never runs: a plain
+    // window with a big label, no Auto Layout, no AVFoundation.
+    UIWindow *probeWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    UIViewController *vc = [[UIViewController alloc] init];
+    vc.view.backgroundColor = [UIColor colorWithRed:0.10 green:0.35 blue:0.15 alpha:1.0];
+
+    UILabel *banner = [[UILabel alloc] initWithFrame:CGRectMake(12, 80, [UIScreen mainScreen].bounds.size.width - 24, 200)];
+    banner.numberOfLines = 0;
+    banner.textColor = [UIColor whiteColor];
+    banner.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightBold];
+    banner.text = @"dovipoc booted\nwaiting for scene...";
+    [vc.view addSubview:banner];
+
+    probeWindow.rootViewController = vc;
+    [probeWindow makeKeyAndVisible];
+    self.probeWindow = probeWindow;
+    self.probeBanner = banner;
     return YES;
 }
 @end
@@ -457,17 +496,15 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
     [controller.view.layer addSublayer:self.surfaceLayer];
 
     self.statusLabel = [[UILabel alloc] init];
-    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
+    // Fixed frame: a zero-size view plus Auto Layout is the classic reason a
+    // probe shows a black screen with no text.
+    CGRect screen = [UIScreen mainScreen].bounds;
+    self.statusLabel.frame = CGRectMake(12, 24, screen.size.width - 24, screen.size.height * 0.5);
+    self.statusLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     self.statusLabel.textColor = UIColor.whiteColor;
     self.statusLabel.numberOfLines = 0;
     self.statusLabel.text = @"Submitting crafted Dolby Vision RPU…";
     [controller.view addSubview:self.statusLabel];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.statusLabel.leadingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.leadingAnchor constant:20],
-        [self.statusLabel.trailingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
-        [self.statusLabel.centerYAnchor constraintEqualToAnchor:controller.view.centerYAnchor],
-    ]];
 
     self.window.rootViewController = controller;
     [self.window makeKeyAndVisible];
@@ -477,6 +514,7 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
             NSString *result = SubmitRPUToWindowServer(self.surfaceLayer);
             ProbePrint(result);
             self.statusLabel.text = result;
+            DoviLog([NSString stringWithFormat:@"scene submit: %@", result]);
         });
     });
 }
