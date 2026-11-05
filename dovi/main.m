@@ -437,7 +437,10 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
     // banner proved the process was alive while willConnectToSession stayed
     // silent), so the whole probe runs from here.
     CGRect screen = [UIScreen mainScreen].bounds;
-    UIWindow *window = [[UIWindow alloc] initWithFrame:screen];
+    // The window must be owned by the delegate: a local variable is released
+    // when didFinishLaunching returns and the screen stays black.
+    self.probeWindow = [[UIWindow alloc] initWithFrame:screen];
+    UIWindow *window = self.probeWindow;
     UIViewController *controller = [[UIViewController alloc] init];
     controller.view.backgroundColor = UIColor.blackColor;
 
@@ -456,15 +459,17 @@ static NSString *SubmitRPUToWindowServer(AVSampleBufferDisplayLayer *displayLaye
     label.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     label.text = @"dovipoc: building frame...";
 
+    [controller.view addSubview:label];
+
     window.rootViewController = controller;
     [window makeKeyAndVisible];
+    self.probeBanner = label;
 
     // Build after the view has a size, then submit.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         surface.frame = controller.view.bounds;
         [controller.view.layer addSublayer:surface];
-        [controller.view addSubview:label];
 
         DoviLog([NSString stringWithFormat:@"bounds=%@ mode=%d",
                  NSStringFromCGRect(controller.view.bounds), (int)SelectedPayloadMode()]);
