@@ -1,0 +1,32 @@
+name: fighelper
+options:
+  bundleIdPrefix: com.you
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+targets:
+  fighelper:
+    type: application
+    platform: iOS
+    sources:
+      - path: src
+        excludes:
+          - Info.plist
+    info:
+      path: src/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.you.fighelper
+        PRODUCT_NAME: fighelper
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        GCC_ENABLE_OBJC_ARC: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_BITCODE: NO
+        CLANG_WARN_DOCUMENTATION_COMMENTS: NO
+        ONLY_ACTIVE_ARCH: NO
+        ARCHS: arm64

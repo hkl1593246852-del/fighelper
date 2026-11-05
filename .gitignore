@@ -1,0 +1,10 @@
+*.xcworkspace
+*.xcodeproj
+build/
+DerivedData/
+Payload/
+*.ipa
+figwork/
+out/
+*.bin
+.DS_Store

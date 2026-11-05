@@ -1,0 +1,59 @@
+name: build-ipa
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+          xcodebuild -project fighelper.xcodeproj -list
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project fighelper.xcodeproj \
+            -target fighelper \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tail -n 80
+
+      - name: Locate app bundle
+        run: |
+          APP=$(find . -name 'fighelper.app' -maxdepth 5 -type d | head -n 1)
+          echo "APP=$APP"
+          test -n "$APP"
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry fighelper-unsigned.ipa Payload
+          ls -l fighelper-unsigned.ipa
+          shasum -a 256 fighelper-unsigned.ipa | tee sha256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fighelper-ipa
+          path: |
+            fighelper-unsigned.ipa
+            sha256.txt
+          retention-days: 30
