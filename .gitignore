@@ -6,5 +6,5 @@ Payload/
 *.ipa
 figwork/
 out/
-*.bin
 .DS_Store
+!dovi/*.bin
