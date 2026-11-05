@@ -214,6 +214,51 @@ int cmRun(void) {
                (unsigned long)win.length, name, textVM + lo, textVM + hi);
     }
 
+    // Decode the few instruction forms that carry the frame constants, so the
+    // numbers are available without pulling the window off the device.
+    uint32_t baseOff = 0, stride = 0, field = 0, frame = 0;
+    BOOL haveBase = NO, haveStride = NO, haveField = NO, haveFrame = NO;
+    for (NSUInteger off = lo; off + 4 <= hi; off += 4) {
+        uint32_t w = wordAt(t, off);
+
+        // movz wN, #imm16
+        if ((w & 0xFF800000u) == 0x52800000u) {
+            int rd = (int)(w & 0x1Fu);
+            uint32_t imm = (w >> 5) & 0xFFFFu;
+            if (rd == 10 && !haveBase) { baseOff = imm; haveBase = YES;
+                qcNote(@"cm mov w10,#%#x  @%#llx", imm, textVM + off); }
+            if (rd == 11 && !haveStride) { stride = imm; haveStride = YES;
+                qcNote(@"cm mov w11,#%#x  @%#llx", imm, textVM + off); }
+        }
+
+        // add x23, x8, #imm12
+        if ((w & 0xFF800000u) == 0x91000000u) {
+            int rn = (int)((w >> 5) & 0x1Fu), rd = (int)(w & 0x1Fu);
+            uint32_t imm = (w >> 10) & 0xFFFu;
+            if (rn == 8 && rd == 23 && !haveField) { field = imm; haveField = YES;
+                qcNote(@"cm add x23,x8,#%#x  @%#llx", imm, textVM + off); }
+        }
+
+        // sub sp, sp, #imm12
+        if ((w & 0xFF8003FFu) == 0xD10003FFu) {
+            uint32_t imm = (w >> 10) & 0xFFFu;
+            if (!haveFrame) { frame = imm; haveFrame = YES;
+                qcNote(@"cm sub sp,sp,#%#x  @%#llx", imm, textVM + off); }
+        }
+    }
+
+    qcNote(@"cm base=%s%#x stride=%s%#x field=%s%#x frame=%s%#x",
+           haveBase ? "" : "?", baseOff, haveStride ? "" : "?", stride,
+           haveField ? "" : "?", field, haveFrame ? "" : "?", frame);
+
+    if (haveBase && haveStride && haveField && haveFrame) {
+        // The last L10 record written is index+1; solve for the index whose
+        // second qword lands on the saved-LR slot at the top of the frame.
+        long idx = (long)((frame - baseOff - field) / stride);
+        qcNote(@"cm candidate INDEX=%ld (frame-base-field)/stride", idx);
+        qcNote(@"cm try INDEX around %ld: %ld %ld %ld", idx, idx - 1, idx + 1);
+    }
+
 cmdone:
     qcNote(@"=== cm end ===");
     NSString *out = [[gQcLines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
