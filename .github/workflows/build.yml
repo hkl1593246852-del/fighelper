@@ -33,7 +33,7 @@ jobs:
             -sdk iphoneos \
             -arch arm64 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tail -n 80
+            build 2>&1 | tail -n 400
 
       - name: Locate app bundle
         run: |
@@ -41,6 +41,20 @@ jobs:
           echo "APP=$APP"
           test -n "$APP"
           echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      - name: Diagnostics
+        run: |
+          OBJ=build/fighelper.build/Release-iphoneos/fighelper.build/Objects-normal/arm64
+          echo "== objects =="
+          ls -l "$OBJ" | grep -E '\.o$' || true
+          echo "== Fig.o symbols =="
+          nm -m "$OBJ/Fig.o" 2>/dev/null | grep -E 'probe|takeFd|connectService|handshake|figRun' || true
+          echo "== Fig.o strings =="
+          strings "$OBJ/Fig.o" | grep -cE 'STEP2|CreationURL|queue\.txt' || true
+          echo "== final binary symbols =="
+          nm -m "$APP_PATH/fighelper" 2>/dev/null | grep -E 'probe|takeFd|figRun' || true
+          echo "== final binary strings =="
+          strings "$APP_PATH/fighelper" | grep -cE 'STEP2|CreationURL|queue\.txt' || true
 
       - name: Package unsigned IPA
         run: |
