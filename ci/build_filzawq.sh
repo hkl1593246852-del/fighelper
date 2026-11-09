@@ -47,11 +47,10 @@ INSTALL_TARGET_PROCESSES = Filza
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = FilzaWQ
-FilzaWQ_FILES = FilzaWQ.xm Wq.m
-FilzaWQ_CFLAGS = -fobjc-arc -I$(THEOS_PROJECT_DIR)
-FilzaWQ_FRAMEWORKS = Foundation UIKit
-# No substrate: the tweak only uses %ctor and NSNotificationCenter, so it needs
-# no hooking runtime and links as a plain dylib.
+FilzaWQ_FILES = FilzaWQ.xm Wq.m $(THEOS)/vendor/orion/fishhook/fishhook.c
+FilzaWQ_CFLAGS = -fobjc-arc -I$(THEOS_PROJECT_DIR) -I$(THEOS)/vendor/orion/fishhook
+FilzaWQ_FRAMEWORKS = Foundation UIKit Security
+# fishhook rebinds the symbol table entries, so no substrate and no Logos hooks.
 
 include $(THEOS)/makefiles/tweak.mk
 MK
