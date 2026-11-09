@@ -113,6 +113,11 @@ static void WQOneTarget(NSString *path, NSString *group) {
 }
 
 static void WQGrantAll(void) {
+    // Visible proof that this dylib is running, independent of any file write.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIApplication sharedApplication].applicationIconBadgeNumber = 1;
+    });
+
     NSString *group = WQOwnGroup();
     if (group.length == 0) {
         WQNote(@"group none: no application-groups entitlement");
@@ -121,14 +126,31 @@ static void WQGrantAll(void) {
         WQNote([@"group " stringByAppendingString:group]);
     }
 
+    WQNote([@"home " stringByAppendingString:NSHomeDirectory()]);
+
     for (int i = 0; i < 6; i++) {
         WQOneTarget(kTargets[i], group);
     }
 
+    NSString *text = [[gReport componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+
+    // Write to every writable location Filza itself can browse.
+    NSMutableArray *dirs = [NSMutableArray array];
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (docs.count > 0) {
-        NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
-        NSString *text = [[gReport componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+        [dirs addObject:[docs objectAtIndex:0]];
+    }
+    NSArray *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    if (caches.count > 0) {
+        [dirs addObject:[caches objectAtIndex:0]];
+    }
+    [dirs addObject:NSTemporaryDirectory()];
+
+    for (NSString *dir in dirs) {
+        if (dir.length == 0) {
+            continue;
+        }
+        NSString *file = [dir stringByAppendingPathComponent:@"filzawq.log"];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
