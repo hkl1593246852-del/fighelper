@@ -72,9 +72,9 @@ INSTALL_TARGET_PROCESSES = Filza
 include \$(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = FilzaWQ
-FilzaWQ_FILES = FilzaWQ.xm Wq.m \$(THEOS)/vendor/orion/fishhook/fishhook.c
-FilzaWQ_CFLAGS = -fobjc-arc -I\$(THEOS_PROJECT_DIR) -I\$(THEOS)/vendor/orion/fishhook
-FilzaWQ_FRAMEWORKS = Foundation UIKit Security
+FilzaWQ_FILES = FilzaWQ.xm Wq.m
+FilzaWQ_CFLAGS = -fobjc-arc -I\$(THEOS_PROJECT_DIR)
+FilzaWQ_FRAMEWORKS = Foundation UIKit
 FilzaWQ_LDFLAGS = -Wl,-install_name,@rpath/lib7z.framework/lib7z \\
                   -Wl,-reexport_library,$WORK/lib7z_orig.dylib
 
@@ -86,6 +86,13 @@ echo "==> Building dylib"
 DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | head -n 1)"
 [ -n "$DYLIB" ] || { echo "dylib not produced"; exit 1; }
 echo "    $DYLIB ($(stat -f%z "$DYLIB") bytes)"
+
+echo "==> Undefined symbols"
+nm -u "$DYLIB" | sed 's/^/    /'
+if nm -u "$DYLIB" | grep -Eq 'SecTask|_SecStaticCode|_csops'; then
+  echo "private API is linked directly; dyld will abort at launch" >&2
+  exit 1
+fi
 
 echo "==> Installing as lib7z"
 cp "$DYLIB" "$REHOST"
