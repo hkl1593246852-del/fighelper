@@ -5,9 +5,8 @@
 // Filza.signature check still passes.
 //
 // The container query takes an operation flag and a part; which pair works is
-// not documented and changes between releases, so every combination is tried in
-// turn and the first hit is kept. All attempts are logged to Documents/filzawq.log
-// so a failure still says exactly which knob is wrong.
+// undocumented and changes between releases, so the pairs are tried in order and
+// the first success is kept. Every attempt lands in Documents/filzawq.log.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -19,12 +18,11 @@
 #import "Wq.h"
 
 typedef struct __SecTask *WQSecTask;
-typedef WQSecTask (*SecTaskCreateFromSelf_t)(CFAllocatorRef);
-typedef CFTypeRef (*SecTaskCopyValueForEntitlement_t)(WQSecTask, CFStringRef, CFErrorRef *);
+typedef WQSecTask (*WQCreateTask)(CFAllocatorRef);
+typedef CFTypeRef (*WQCopyEnt)(WQSecTask, CFStringRef, CFErrorRef *);
 
-static NSString *const kFallbackGroup = @"group.com.you.filzalite";
-
-static NSString *const kTargets[] = {
+static NSString *const kGroupFallback = @"group.com.you.filzalite";
+static NSString *const kTargets[6] = {
     @"/var/mobile/Containers/Data/Application",
     @"/var/mobile/Containers/Data/InternalDaemon",
     @"/var/mobile/Containers/Data/PluginKitPlugin",
@@ -33,113 +31,112 @@ static NSString *const kTargets[] = {
     @"/var/containers/Data/System",
 };
 
-typedef struct {
-    uint64_t flags;
-    uint64_t part;
-    const char *label;
-} WQVariant;
+// part 1 = Data, 2 = Shared, 3 = Library/Caches, 4 = tmp
+static const uint64_t kFlags[3] = { 0x8000000000000000ULL, 0x0000000800000000ULL, 0ULL };
+static const char *const kFlagNames[3] = { "f27", "f26", "f0" };
+static const uint64_t kParts[4] = { 3, 1, 2, 4 };
 
-// part: 1 = Data, 2 = Shared, 3 = Library/Caches, 4 = tmp
-static const WQVariant kVariants[] = {
-    {0x8000000000000000ULL, 3, "f27/p3"},
-    {0x0000000800000000ULL, 3, "f26/p3"},
-    {0ULL,                  3, "f0/p3"},
-    {0x8000000000000000ULL, 1, "f27/p1"},
-    {0x0000000800000000ULL, 1, "f26/p1"},
-    {0ULL,                  1, "f0/p1"},
-    {0x8000000000000000ULL, 2, "f27/p2"},
-    {0ULL,                  2, "f0/p2"},
-    {0x8000000000000000ULL, 4, "f27/p4"},
-    {0ULL,                  4, "f0/p4"},
-};
+static NSMutableArray *gReport;
 
-static os_log_t WQLog(void) {
-    static os_log_t log;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ log = os_log_create("com.you.filzawq", "escape"); });
-    return log;
+static void WQNote(NSString *line) {
+    if (gReport == nil) gReport = [NSMutableArray array];
+    [gReport addObject:line];
 }
 
-static NSString *WQGroupFromEntitlements(void) {
-    SecTaskCreateFromSelf_t create =
-        (SecTaskCreateFromSelf_t)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
-    SecTaskCopyValueForEntitlement_t copy =
-        (SecTaskCopyValueForEntitlement_t)dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement");
-    if (create == NULL || copy == NULL) return nil;
+static NSString *WQOwnGroup(void) {
+    WQCreateTask create = (WQCreateTask)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
+    WQCopyEnt copy = (WQCopyEnt)dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement");
+    if (create == NULL || copy == NULL) {
+        return nil;
+    }
 
     WQSecTask task = create(kCFAllocatorDefault);
-    if (task == NULL) return nil;
+    if (task == NULL) {
+        return nil;
+    }
 
     CFTypeRef value = copy(task, CFSTR("com.apple.security.application-groups"), NULL);
     CFRelease(task);
-    if (value == NULL) return nil;
+    if (value == NULL) {
+        return nil;
+    }
 
     NSString *group = nil;
-    if (CFGetTypeID(value) == CFArrayGetTypeID() && CFArrayGetCount((CFArrayRef)value) > 0) {
-        CFTypeRef first = CFArrayGetValueAtIndex((CFArrayRef)value, 0);
-        if (CFGetTypeID(first) == CFStringGetTypeID()) {
-            group = [NSString stringWithString:(__bridge NSString *)first];
+    if (CFGetTypeID(value) == CFArrayGetTypeID()) {
+        CFArrayRef array = (CFArrayRef)value;
+        if (CFArrayGetCount(array) > 0) {
+            CFTypeRef first = CFArrayGetValueAtIndex(array, 0);
+            if (CFGetTypeID(first) == CFStringGetTypeID()) {
+                group = [NSString stringWithString:(__bridge NSString *)first];
+            }
         }
     }
     CFRelease(value);
     return group;
 }
 
-/// How many entries a plain opendir sees, and errno when it fails. This is the
-/// real proof that the extension covers the path.
 static NSString *WQProbe(NSString *path) {
     errno = 0;
-    DIR *dp = opendir(path.fileSystemRepresentation);
+    DIR *dp = opendir([path fileSystemRepresentation]);
     if (dp == NULL) {
-        return [NSString stringWithFormat:@"opendir errno=%d", errno];
+        return [NSString stringWithFormat:@"opendir errno %d", errno];
     }
-    int n = 0;
-    while (readdir(dp) != NULL) n++;
+    int count = 0;
+    while (readdir(dp) != NULL) {
+        count++;
+    }
     closedir(dp);
-    return [NSString stringWithFormat:@"opendir ok entries=%d", n];
+    return [NSString stringWithFormat:@"opendir ok entries %d", count];
+}
+
+static void WQOneTarget(NSString *path, NSString *group) {
+    WQNote([@"--- " stringByAppendingString:path]);
+
+    int64_t best = -255;
+    NSString *bestLabel = @"-";
+
+    for (int f = 0; f < 3; f++) {
+        for (int p = 0; p < 4; p++) {
+            if (best >= 0) {
+                break;
+            }
+            uint64_t flags = kFlags[f];
+            uint64_t part = kParts[p];
+            int64_t handle = WQAccessEx(path, group, flags, part);
+            NSString *label = [NSString stringWithFormat:@"%s/p%llu",
+                               kFlagNames[f], (unsigned long long)part];
+            WQNote([NSString stringWithFormat:@"  %@ handle %lld", label, handle]);
+            if (handle >= 0) {
+                best = handle;
+                bestLabel = label;
+            } else if (handle != -1) {
+                best = handle;
+            }
+        }
+    }
+
+    WQNote([NSString stringWithFormat:@"  best %@ handle %lld, %@",
+           bestLabel, best, WQProbe(path)]);
 }
 
 static void WQGrantAll(void) {
-    NSString *group = WQGroupFromEntitlements();
-    NSMutableArray<NSString *> *report = [NSMutableArray array];
-
-    [report addObject:[NSString stringWithFormat:@"group=%@", group ?: @"(none)"]];
-    os_log_fault(WQLog(), "app group = %{public}@", group ?: @"(none)");
-
-    NSString *effective = group.length > 0 ? group : kFallbackGroup;
-
-    for (size_t i = 0; i < sizeof(kTargets) / sizeof(kTargets[0]); i++) {
-        NSString *path = kTargets[i];
-        [report addObject:[NSString stringWithFormat:@"--- %@", path]];
-
-        int64_t best = -255;
-        const char *bestLabel = "-";
-
-        for (size_t v = 0; v < sizeof(kVariants) / sizeof(kVariants[0]); v++) {
-            int64_t h = WQAccessEx(path, effective, kVariants[v].flags, kVariants[v].part);
-            [report addObject:[NSString stringWithFormat:@"  %-8s handle=%lld",
-                               kVariants[v].label, h]];
-            os_log_fault(WQLog(), "%{public}@ %s -> %lld", path, kVariants[v].label, h);
-            if (h >= 0) {
-                best = h;
-                bestLabel = kVariants[v].label;
-                break;
-            }
-            if (h != -1) best = h;      // remember the most informative failure
-        }
-
-        NSString *probe = WQProbe(path);
-        [report addObject:[NSString stringWithFormat:@"  best=%s handle=%lld  %@",
-                           bestLabel, best, probe]];
-        os_log_fault(WQLog(), "%{public}@ best=%s handle=%lld %{public}@",
-                     path, bestLabel, best, probe);
+    NSString *group = WQOwnGroup();
+    if (group.length == 0) {
+        WQNote(@"group (none): no application-groups entitlement");
+        group = kGroupFallback;
+    } else {
+        WQNote([@"group " stringByAppendingString:group]);
     }
 
-    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    if (docs.length > 0) {
-        NSString *path = [docs stringByAppendingPathComponent:@"filzawq.log"];
-        [[[report componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"]
-            writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    for (int i = 0; i < 6; i++) {
+        WQOneTarget(kTargets[i], group);
+    }
+
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count > 0) {
+        NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
+        NSString *text = [[gReport componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+        [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
 
@@ -150,10 +147,11 @@ static void FilzaWQInit(void) {
         WQGrantAll();
     });
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                      object:nil
-                                                       queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification *note) {
-        WQGrantAll();
-    }];
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidBecomeActiveNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+                    WQGrantAll();
+                }];
 }
