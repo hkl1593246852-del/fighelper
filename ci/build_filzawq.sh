@@ -85,7 +85,16 @@ include \$(THEOS)/makefiles/tweak.mk
 MK
 
 echo "==> Building dylib"
-( cd "$WORK/proj" && make clean >/dev/null 2>&1 || true; make FINALPACKAGE=1 )
+if ! ( cd "$WORK/proj" && { make clean >/dev/null 2>&1 || true; }; make FINALPACKAGE=1 ); then
+  echo "==> build failed; preprocessed source follows"
+  MM="$(find "$WORK/proj/.theos" -name 'FilzaWQ.xm.mm' 2>/dev/null | head -n 1)"
+  if [ -n "$MM" ]; then
+    sed -n '1,120p' "$MM"
+  else
+    echo "no preprocessed file"
+  fi
+  exit 1
+fi
 DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | head -n 1)"
 [ -n "$DYLIB" ] || { echo "dylib not produced"; exit 1; }
 echo "    $DYLIB ($(stat -f%z "$DYLIB") bytes)"
