@@ -54,9 +54,12 @@ REHOST="$APP/Frameworks/lib7z.framework/lib7z"
 [ -f "$REHOST" ] || { echo "rehost target $REHOST missing"; exit 1; }
 
 echo "==> Moving the original lib7z aside"
+# Keep the real library as a plain .dylib under Frameworks: signing tools sign
+# every dylib there, while an extension-less file inside a framework gets skipped
+# and dyld then rejects it with "code signature invalid".
 cp "$REHOST" "$WORK/lib7z_orig.dylib"
-install_name_tool -id "@rpath/lib7z.framework/lib7z_orig" "$WORK/lib7z_orig.dylib"
-cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z.framework/lib7z_orig"
+install_name_tool -id "@executable_path/Frameworks/lib7z_orig.dylib" "$WORK/lib7z_orig.dylib"
+cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
 
 echo "==> Staging tweak project"
 mkdir -p "$WORK/proj"
@@ -98,8 +101,11 @@ echo "==> Installing as lib7z"
 cp "$DYLIB" "$REHOST"
 
 echo "==> Signing"
-find "$APP" -name '*.dylib' -exec codesign -f -s - {} \; 2>/dev/null || true
+codesign -f -s - "$APP/Frameworks/lib7z_orig.dylib"
+codesign -f -s - "$REHOST"
+find "$APP/Frameworks" -maxdepth 1 -name '*.framework' -exec codesign -f -s - {} \; 2>/dev/null || true
 codesign -f -s - "$APP" 2>/dev/null || true
+codesign -dv "$APP/Frameworks/lib7z_orig.dylib" 2>&1 | sed 's/^/    /' || true
 
 echo "==> Packaging"
 mkdir -p "$(dirname "$OUT")"
