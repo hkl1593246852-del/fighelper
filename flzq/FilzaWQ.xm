@@ -16,11 +16,19 @@
 #import "Wq.h"
 
 // SecTask lives in the private Security headers; declare just what is needed.
+// The tweak compiles as Objective-C++, so these need C linkage to match the
+// dylib's exported symbols.
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct __SecTask *WQSecTask;
 extern WQSecTask SecTaskCreateFromSelf(CFAllocatorRef allocator);
 extern CFTypeRef SecTaskCopyValueForEntitlement(WQSecTask task,
                                                 CFStringRef entitlement,
                                                 CFErrorRef *error);
+#ifdef __cplusplus
+}
+#endif
 
 static NSString *const kFallbackGroup = @"group.com.you.filzalite";
 
