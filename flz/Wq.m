@@ -34,11 +34,8 @@ static void WQCleanSymlink(NSString *group) {
     [files createDirectoryAtURL:caches withIntermediateDirectories:NO attributes:nil error:nil];
 }
 
-int64_t WQAccess(NSString *path, NSString *group, int mode) {
-    if (!mode) {
-        struct stat st;
-        if (lstat(path.fileSystemRepresentation, &st) != 0) return -255;
-    }
+int64_t WQAccessEx(NSString *path, NSString *group, uint64_t flags, uint64_t part) {
+    if (path.length == 0) return -255;
 
     NSFileManager *files = [NSFileManager defaultManager];
     NSURL *root = [files containerURLForSecurityApplicationGroupIdentifier:group];
@@ -81,8 +78,8 @@ int64_t WQAccess(NSString *path, NSString *group, int mode) {
     qSetClass(query, 7);                              // app group class
     xpc_object_t ident = xpc_string_create(group.UTF8String);
     qSetGroups(query, ident);
-    qSetPart(query, 3);                               // Library/Caches
-    qSetFlags(query, mode ? 0x0000000800000000ULL : 0x8000000000000000ULL);
+    qSetPart(query, part);
+    qSetFlags(query, flags);
 
     [files removeItemAtPath:caches error:nil];
     if (![files createSymbolicLinkAtPath:caches
@@ -114,6 +111,11 @@ int64_t WQAccess(NSString *path, NSString *group, int mode) {
     dlclose(mgr);
     WQCleanSymlink(group);
     return handle;
+}
+
+int64_t WQAccess(NSString *path, NSString *group, int mode) {
+    const uint64_t flags = mode ? 0x0000000800000000ULL : 0x8000000000000000ULL;
+    return WQAccessEx(path, group, flags, 3);
 }
 
 void WQRelease(int64_t handle) {
