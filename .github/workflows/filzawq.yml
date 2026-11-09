@@ -1,14 +1,17 @@
 name: filzawq
 
-# Builds Filza + worse_query. Needs the Filza IPA in the repo at
-# filza/Filza.ipa (or a FILZA_IPA_URL repository variable). Skips otherwise.
+# Builds the diagnostic dylib into a Filza base:
+#   filza/base-wq.ipa   Filza 4.0.0 with a FilzaApplySandboxExt slot (preferred)
+#   filza/Filza.ipa     stock Filza 5.0.1, handled through the lib7z slot
 
 on:
   push:
     branches: [ main ]
     paths:
       - 'flzq/**'
+      - 'flz/**'
       - 'ci/build_filzawq.sh'
+      - 'filza/**'
   workflow_dispatch:
 
 jobs:
@@ -17,19 +20,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch Filza IPA
+      - name: Pick a base IPA
         run: |
           mkdir -p filza
-          if [ -f filza/Filza.ipa ]; then
-            echo "using repo copy"
+          if [ -f filza/base-wq.ipa ]; then
+            echo "BASE=filza/base-wq.ipa" >> "$GITHUB_ENV"
+          elif [ -f filza/Filza.ipa ]; then
+            echo "BASE=filza/Filza.ipa" >> "$GITHUB_ENV"
           elif [ -n "${{ vars.FILZA_IPA_URL }}" ]; then
-            echo "downloading from repository variable"
-            curl -fL --retry 3 -o filza/Filza.ipa "${{ vars.FILZA_IPA_URL }}"
+            curl -fL --retry 3 -o filza/base.ipa "${{ vars.FILZA_IPA_URL }}"
+            echo "BASE=filza/base.ipa" >> "$GITHUB_ENV"
           else
-            echo "::error::no Filza IPA. Add filza/Filza.ipa or set the FILZA_IPA_URL repository variable."
+            echo "::error::no base IPA in filza/"
             exit 1
           fi
-          ls -l filza/Filza.ipa
+          echo "base: $BASE"
 
       - name: Toolchain
         run: |
@@ -39,12 +44,12 @@ jobs:
       - name: Build + inject
         run: |
           chmod +x ci/build_filzawq.sh
-          THEOS="$HOME/theos" ./ci/build_filzawq.sh filza/Filza.ipa build/FilzaWQ.ipa
+          THEOS="$HOME/theos" ./ci/build_filzawq.sh "$BASE" build/FilzaWQ.ipa
 
       - name: Verify
         run: |
-          unzip -l build/FilzaWQ.ipa | head -n 25
-          unzip -l build/FilzaWQ.ipa | grep -E 'FilzaWQ.dylib|Filza$' || true
+          unzip -l build/FilzaWQ.ipa | head -n 20
+          unzip -l build/FilzaWQ.ipa | grep -E 'FilzaApplySandboxExt|lib7z_orig|\.app/Filza$' || true
           shasum -a 256 build/FilzaWQ.ipa | tee build/sha256.txt
 
       - uses: actions/upload-artifact@v4
