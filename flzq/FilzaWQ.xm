@@ -4,12 +4,16 @@
 // already links; nothing in Filza's main executable changes, so its
 // Filza.signature check still passes.
 //
-// Every private API is resolved with dlsym at runtime: linking SecTask*
-// directly makes dyld abort at launch when the symbol is not exported.
+// The container query takes an operation flag and a part; which pair works is
+// not documented and changes between releases, so every combination is tried in
+// turn and the first hit is kept. All attempts are logged to Documents/filzawq.log
+// so a failure still says exactly which knob is wrong.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <dirent.h>
 #import <dlfcn.h>
+#import <errno.h>
 #import <os/log.h>
 
 #import "Wq.h"
@@ -29,6 +33,26 @@ static NSString *const kTargets[] = {
     @"/var/containers/Data/System",
 };
 
+typedef struct {
+    uint64_t flags;
+    uint64_t part;
+    const char *label;
+} WQVariant;
+
+// part: 1 = Data, 2 = Shared, 3 = Library/Caches, 4 = tmp
+static const WQVariant kVariants[] = {
+    {0x8000000000000000ULL, 3, "f27/p3"},
+    {0x0000000800000000ULL, 3, "f26/p3"},
+    {0ULL,                  3, "f0/p3"},
+    {0x8000000000000000ULL, 1, "f27/p1"},
+    {0x0000000800000000ULL, 1, "f26/p1"},
+    {0ULL,                  1, "f0/p1"},
+    {0x8000000000000000ULL, 2, "f27/p2"},
+    {0ULL,                  2, "f0/p2"},
+    {0x8000000000000000ULL, 4, "f27/p4"},
+    {0ULL,                  4, "f0/p4"},
+};
+
 static os_log_t WQLog(void) {
     static os_log_t log;
     static dispatch_once_t once;
@@ -36,7 +60,6 @@ static os_log_t WQLog(void) {
     return log;
 }
 
-/// First app group in our own entitlements, or nil when the profile carries none.
 static NSString *WQGroupFromEntitlements(void) {
     SecTaskCreateFromSelf_t create =
         (SecTaskCreateFromSelf_t)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
@@ -62,6 +85,20 @@ static NSString *WQGroupFromEntitlements(void) {
     return group;
 }
 
+/// How many entries a plain opendir sees, and errno when it fails. This is the
+/// real proof that the extension covers the path.
+static NSString *WQProbe(NSString *path) {
+    errno = 0;
+    DIR *dp = opendir(path.fileSystemRepresentation);
+    if (dp == NULL) {
+        return [NSString stringWithFormat:@"opendir errno=%d", errno];
+    }
+    int n = 0;
+    while (readdir(dp) != NULL) n++;
+    closedir(dp);
+    return [NSString stringWithFormat:@"opendir ok entries=%d", n];
+}
+
 static void WQGrantAll(void) {
     NSString *group = WQGroupFromEntitlements();
     NSMutableArray<NSString *> *report = [NSMutableArray array];
@@ -69,22 +106,33 @@ static void WQGrantAll(void) {
     [report addObject:[NSString stringWithFormat:@"group=%@", group ?: @"(none)"]];
     os_log_fault(WQLog(), "app group = %{public}@", group ?: @"(none)");
 
-    if (group.length == 0) {
-        [report addObject:@"no com.apple.security.application-groups entitlement"];
-    }
-
     NSString *effective = group.length > 0 ? group : kFallbackGroup;
 
     for (size_t i = 0; i < sizeof(kTargets) / sizeof(kTargets[0]); i++) {
-        NSString *p = kTargets[i];
-        int64_t h = WQAccess(p, effective, 0);
-        int used = 0;
-        if (h < 0 && h != -255) {
-            h = WQAccess(p, effective, 1);      // iOS 26.x flag set
-            used = 1;
+        NSString *path = kTargets[i];
+        [report addObject:[NSString stringWithFormat:@"--- %@", path]];
+
+        int64_t best = -255;
+        const char *bestLabel = "-";
+
+        for (size_t v = 0; v < sizeof(kVariants) / sizeof(kVariants[0]); v++) {
+            int64_t h = WQAccessEx(path, effective, kVariants[v].flags, kVariants[v].part);
+            [report addObject:[NSString stringWithFormat:@"  %-8s handle=%lld",
+                               kVariants[v].label, h]];
+            os_log_fault(WQLog(), "%{public}@ %s -> %lld", path, kVariants[v].label, h);
+            if (h >= 0) {
+                best = h;
+                bestLabel = kVariants[v].label;
+                break;
+            }
+            if (h != -1) best = h;      // remember the most informative failure
         }
-        [report addObject:[NSString stringWithFormat:@"%@ mode=%d handle=%lld", p, used, h]];
-        os_log_fault(WQLog(), "%{public}@ mode=%d handle=%lld", p, used, h);
+
+        NSString *probe = WQProbe(path);
+        [report addObject:[NSString stringWithFormat:@"  best=%s handle=%lld  %@",
+                           bestLabel, best, probe]];
+        os_log_fault(WQLog(), "%{public}@ best=%s handle=%lld %{public}@",
+                     path, bestLabel, best, probe);
     }
 
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
