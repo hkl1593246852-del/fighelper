@@ -109,12 +109,21 @@ fi
 echo "==> Installing as lib7z"
 cp "$DYLIB" "$REHOST"
 
+echo "==> Adopting the MobileHouseArrest identity"
+# FilzaSlop's container access comes from being signed as Apple's house-arrest
+# service, not from an app-group extension. Both the bundle identifier and the
+# CodeDirectory identifier have to carry the same value.
+HOUSE_ID="com.apple.mobile.MobileHouseArrest"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $HOUSE_ID" "$APP/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $HOUSE_ID" "$APP/Info.plist"
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+
 echo "==> Signing"
 codesign -f -s - "$APP/Frameworks/lib7z_orig.dylib"
 codesign -f -s - "$REHOST"
 find "$APP/Frameworks" -maxdepth 1 -name '*.framework' -exec codesign -f -s - {} \; 2>/dev/null || true
-codesign -f -s - "$APP" 2>/dev/null || true
-codesign -dv "$APP/Frameworks/lib7z_orig.dylib" 2>&1 | sed 's/^/    /' || true
+codesign -f -s - -i "$HOUSE_ID" "$APP" 2>/dev/null || codesign -f -s - "$APP" 2>/dev/null || true
+codesign -dv "$APP" 2>&1 | grep -E 'Identifier|TeamIdentifier' | sed 's/^/    /' || true
 
 echo "==> Packaging"
 mkdir -p "$(dirname "$OUT")"
