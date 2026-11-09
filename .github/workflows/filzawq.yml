@@ -1,0 +1,56 @@
+name: filzawq
+
+# Builds Filza + worse_query. Needs the Filza IPA in the repo at
+# filza/Filza.ipa (or a FILZA_IPA_URL repository variable). Skips otherwise.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'flzq/**'
+      - 'ci/build_filzawq.sh'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Filza IPA
+        run: |
+          mkdir -p filza
+          if [ -f filza/Filza.ipa ]; then
+            echo "using repo copy"
+          elif [ -n "${{ vars.FILZA_IPA_URL }}" ]; then
+            echo "downloading from repository variable"
+            curl -fL --retry 3 -o filza/Filza.ipa "${{ vars.FILZA_IPA_URL }}"
+          else
+            echo "::error::no Filza IPA. Add filza/Filza.ipa or set the FILZA_IPA_URL repository variable."
+            exit 1
+          fi
+          ls -l filza/Filza.ipa
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          brew install ldid xz 2>/dev/null || brew install ldid
+
+      - name: Build + inject
+        run: |
+          chmod +x ci/build_filzawq.sh
+          THEOS="$HOME/theos" ./ci/build_filzawq.sh filza/Filza.ipa build/FilzaWQ.ipa
+
+      - name: Verify
+        run: |
+          unzip -l build/FilzaWQ.ipa | head -n 25
+          unzip -l build/FilzaWQ.ipa | grep -E 'FilzaWQ.dylib|Filza$' || true
+          shasum -a 256 build/FilzaWQ.ipa | tee build/sha256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filzawq-ipa
+          path: |
+            build/FilzaWQ.ipa
+            build/sha256.txt
+          retention-days: 30
