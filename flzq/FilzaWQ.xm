@@ -14,6 +14,16 @@
 #import <os/log.h>
 
 #import "Wq.h"
+#import "fishhook.h"
+
+// Filza validates its own signature and shows "Main binary was modified" once the
+// binary carries an injected LC_LOAD_DYLIB. Making the validity check succeed is
+// enough; the code object itself is still created normally.
+static OSStatus (*orig_static_check)(SecStaticCodeRef, SecCSFlags, SecRequirementRef);
+static OSStatus hook_static_check(SecStaticCodeRef code, SecCSFlags flags,
+                                  SecRequirementRef requirement) {
+    return errSecSuccess;
+}
 
 // SecTask lives in the private Security headers; declare just what is needed.
 // The tweak compiles as Objective-C++, so these need C linkage to match the
@@ -103,6 +113,12 @@ static void WQGrantAll(void) {
 }
 
 %ctor {
+    struct rebinding rebinds[] = {
+        {"SecStaticCodeCheckValidity", hook_static_check, (void **)&orig_static_check},
+        {"SecStaticCodeCheckValidityWithErrors", hook_static_check, (void **)&orig_static_check},
+    };
+    rebind_symbols(rebinds, sizeof(rebinds) / sizeof(rebinds[0]));
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
