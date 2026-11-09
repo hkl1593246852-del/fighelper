@@ -67,7 +67,9 @@ mkdir -p "$WORK/ipa"
 unzip -q "$IPA" -d "$WORK/ipa"
 APP="$(find "$WORK/ipa/Payload" -maxdepth 1 -name '*.app' -type d | head -n 1)"
 [ -n "$APP" ] || { echo "no .app in Payload"; exit 1; }
-BIN="$(find "$APP" -maxdepth 1 -type f -perm +111 | head -n 1)"
+EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+BIN="$APP/$EXEC_NAME"
+[ -f "$BIN" ] || { echo "binary $BIN missing"; exit 1; }
 echo "    app=$APP"
 echo "    bin=$BIN"
 
