@@ -114,7 +114,10 @@ int64_t WQAccessEx(NSString *path, NSString *group, uint64_t flags, uint64_t par
 }
 
 int64_t WQAccess(NSString *path, NSString *group, int mode) {
-    const uint64_t flags = mode ? 0x0000000800000000ULL : 0x8000000000000000ULL;
+    // Upstream constants: iOS 27 uses 0x0000008000000000, iOS 26.x needs
+    // 0x0000000800000000. Anything else makes containermanagerd return a result
+    // whose token array is malformed, and copy_sandbox_token traps in libxpc.
+    const uint64_t flags = mode ? 0x0000000800000000ULL : 0x0000008000000000ULL;
     return WQAccessEx(path, group, flags, 3);
 }
 
