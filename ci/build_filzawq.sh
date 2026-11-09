@@ -1,21 +1,22 @@
 #!/bin/bash
-# Build FilzaWQ.dylib and load it into Filza without modifying the main binary.
+# Build our diagnostic dylib into a Filza base and repackage an unsigned IPA.
 #
-# Filza ships Filza.signature: a 256-byte signature over its main executable, so
-# adding LC_LOAD_DYLIB trips "Main binary was modified" and the check cannot be
-# satisfied at runtime. Instead this replaces an already-linked framework with a
-# re-exporting dylib:
+# Two base layouts are supported:
 #
-#   Frameworks/lib7z.framework/lib7z        -> our dylib (constructor runs)
-#   Frameworks/lib7z.framework/lib7z_orig   -> the real lib7z, re-exported
+#   slot   - the base already links Frameworks/FilzaApplySandboxExt.dylib
+#            (Filza 4.0.0 bases, e.g. MchinaMd57764/filza-wq). The dylib is
+#            replaced in place, so the main binary and its load commands stay
+#            untouched and no integrity check fires.
 #
-# The main binary keeps its original load command, so it stays byte-identical and
-# the signature check still passes.
+#   rehost - a stock Filza that links @rpath/lib7z.framework/lib7z (5.0.x, which
+#            validates Filza.signature over its main binary). The dylib takes
+#            over that path and re-exports the real lib7z so symbols still
+#            resolve and the main binary stays byte-identical.
 #
-# Usage: ci/build_filzawq.sh <Filza.ipa> [out.ipa]
+# Usage: ci/build_filzawq.sh <base.ipa> [out.ipa]
 set -euo pipefail
 
-IPA="${1:?usage: build_filzawq.sh <Filza.ipa> [out.ipa]}"
+IPA="${1:?usage: build_filzawq.sh <base.ipa> [out.ipa]}"
 OUT="${2:-build/FilzaWQ.ipa}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 THEOS="${THEOS:-$HOME/theos}"
@@ -29,17 +30,12 @@ export THEOS
 if SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" && [ -d "$SYSROOT" ]; then
   export SYSROOT
   echo "    SYSROOT=$SYSROOT"
-else
-  echo "==> No Xcode iOS SDK; falling back to theos/sdks"
-  if [ ! -d "$THEOS/sdks" ] || [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
-    git clone --depth 1 https://github.com/theos/sdks "$THEOS/sdks"
-  fi
 fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "==> Unpacking Filza IPA"
+echo "==> Unpacking base IPA"
 mkdir -p "$WORK/ipa"
 unzip -q "$IPA" -d "$WORK/ipa"
 APP="$(find "$WORK/ipa/Payload" -maxdepth 1 -name '*.app' -type d | head -n 1)"
@@ -50,22 +46,38 @@ BIN="$APP/$EXEC_NAME"
 echo "    app=$APP"
 echo "    bin=$BIN"
 
+SLOT="$APP/Frameworks/FilzaApplySandboxExt.dylib"
 REHOST="$APP/Frameworks/lib7z.framework/lib7z"
-[ -f "$REHOST" ] || { echo "rehost target $REHOST missing"; exit 1; }
 
-echo "==> Moving the original lib7z aside"
-# Keep the real library as a plain .dylib under Frameworks: signing tools sign
-# every dylib there, while an extension-less file inside a framework gets skipped
-# and dyld then rejects it with "code signature invalid".
-cp "$REHOST" "$WORK/lib7z_orig.dylib"
-install_name_tool -id "@executable_path/Frameworks/lib7z_orig.dylib" "$WORK/lib7z_orig.dylib"
-cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
+if [ -f "$SLOT" ]; then
+  MODE=slot
+  INSTALL_NAME="@executable_path/Frameworks/FilzaApplySandboxExt.dylib"
+  echo "==> Mode: slot (existing FilzaApplySandboxExt slot)"
+elif [ -f "$REHOST" ]; then
+  MODE=rehost
+  INSTALL_NAME="@rpath/lib7z.framework/lib7z"
+  echo "==> Mode: rehost (lib7z slot)"
+else
+  echo "base has neither a FilzaApplySandboxExt nor a lib7z slot"; exit 1
+fi
+
+if [ "$MODE" = "rehost" ]; then
+  echo "==> Moving the original lib7z aside"
+  cp "$REHOST" "$WORK/lib7z_orig.dylib"
+  install_name_tool -id "@executable_path/Frameworks/lib7z_orig.dylib" "$WORK/lib7z_orig.dylib"
+  cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
+fi
 
 echo "==> Staging tweak project"
 mkdir -p "$WORK/proj"
 cp "$ROOT/flzq/FilzaWQ.xm" "$WORK/proj/"
 cp "$ROOT/flzq/Wq.h"       "$WORK/proj/"
 cp "$ROOT/flz/Wq.m"        "$WORK/proj/"
+
+REEXPORT=""
+if [ "$MODE" = "rehost" ]; then
+  REEXPORT="-Wl,-reexport_library,$WORK/lib7z_orig.dylib"
+fi
 
 cat > "$WORK/proj/Makefile" <<MK
 ARCHS = arm64
@@ -78,21 +90,14 @@ TWEAK_NAME = FilzaWQ
 FilzaWQ_FILES = FilzaWQ.xm Wq.m
 FilzaWQ_CFLAGS = -fobjc-arc -I\$(THEOS_PROJECT_DIR)
 FilzaWQ_FRAMEWORKS = Foundation UIKit
-FilzaWQ_LDFLAGS = -Wl,-install_name,@rpath/lib7z.framework/lib7z \\
-                  -Wl,-reexport_library,$WORK/lib7z_orig.dylib
+FilzaWQ_LDFLAGS = -Wl,-install_name,$INSTALL_NAME $REEXPORT
 
 include \$(THEOS)/makefiles/tweak.mk
 MK
 
 echo "==> Building dylib"
 if ! ( cd "$WORK/proj" && { make clean >/dev/null 2>&1 || true; }; make FINALPACKAGE=1 ); then
-  echo "==> build failed; preprocessed source follows"
-  MM="$(find "$WORK/proj/.theos" -name 'FilzaWQ.xm.mm' 2>/dev/null | head -n 1)"
-  if [ -n "$MM" ]; then
-    sed -n '1,120p' "$MM"
-  else
-    echo "no preprocessed file"
-  fi
+  echo "==> build failed"
   exit 1
 fi
 DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | head -n 1)"
@@ -106,24 +111,17 @@ if nm -u "$DYLIB" | grep -Eq 'SecTask|_SecStaticCode|_csops'; then
   exit 1
 fi
 
-echo "==> Installing as lib7z"
-cp "$DYLIB" "$REHOST"
-
-echo "==> Adopting the MobileHouseArrest identity"
-# FilzaSlop's container access comes from being signed as Apple's house-arrest
-# service, not from an app-group extension. Both the bundle identifier and the
-# CodeDirectory identifier have to carry the same value.
-HOUSE_ID="com.apple.mobile.MobileHouseArrest"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $HOUSE_ID" "$APP/Info.plist" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $HOUSE_ID" "$APP/Info.plist"
-/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+echo "==> Installing dylib"
+if [ "$MODE" = "slot" ]; then
+  cp "$DYLIB" "$SLOT"
+else
+  cp "$DYLIB" "$REHOST"
+fi
 
 echo "==> Signing"
-codesign -f -s - "$APP/Frameworks/lib7z_orig.dylib"
-codesign -f -s - "$REHOST"
-find "$APP/Frameworks" -maxdepth 1 -name '*.framework' -exec codesign -f -s - {} \; 2>/dev/null || true
-codesign -f -s - -i "$HOUSE_ID" "$APP" 2>/dev/null || codesign -f -s - "$APP" 2>/dev/null || true
-codesign -dv "$APP" 2>&1 | grep -E 'Identifier|TeamIdentifier' | sed 's/^/    /' || true
+codesign -f -s - "$APP/Frameworks/lib7z_orig.dylib" 2>/dev/null || true
+find "$APP/Frameworks" -maxdepth 2 \( -name '*.dylib' -o -name '*.framework' \) -exec codesign -f -s - {} \; 2>/dev/null || true
+codesign -f -s - "$APP" 2>/dev/null || true
 
 echo "==> Packaging"
 mkdir -p "$(dirname "$OUT")"
