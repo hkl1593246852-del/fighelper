@@ -10,8 +10,6 @@
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
-#import <Security/SecCode.h>
-#import <Security/SecRequirement.h>
 #import <UIKit/UIKit.h>
 #import <os/log.h>
 
@@ -20,11 +18,11 @@
 
 // Filza validates its own signature and shows "Main binary was modified" once the
 // binary carries an injected LC_LOAD_DYLIB. Making the validity check succeed is
-// enough; the code object itself is still created normally.
-static OSStatus (*orig_static_check)(SecStaticCodeRef, SecCSFlags, SecRequirementRef);
-static OSStatus hook_static_check(SecStaticCodeRef code, SecCSFlags flags,
-                                  SecRequirementRef requirement) {
-    return errSecSuccess;
+// enough; the code object itself is still created normally. The Security types
+// stay opaque here so no private header is needed.
+static void *orig_static_check;
+static int hook_static_check(void *code, uint32_t flags, void *requirement) {
+    return 0;   // errSecSuccess
 }
 
 // SecTask lives in the private Security headers; declare just what is needed.
