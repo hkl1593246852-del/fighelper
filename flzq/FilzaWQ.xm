@@ -10,6 +10,8 @@
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
+#import <Security/SecCode.h>
+#import <Security/SecRequirement.h>
 #import <UIKit/UIKit.h>
 #import <os/log.h>
 
