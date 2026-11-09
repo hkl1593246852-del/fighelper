@@ -114,8 +114,8 @@ static void WQGrantAll(void) {
 
 %ctor {
     struct rebinding rebinds[] = {
-        {"SecStaticCodeCheckValidity", hook_static_check, (void **)&orig_static_check},
-        {"SecStaticCodeCheckValidityWithErrors", hook_static_check, (void **)&orig_static_check},
+        {"SecStaticCodeCheckValidity", (void *)hook_static_check, (void **)&orig_static_check},
+        {"SecStaticCodeCheckValidityWithErrors", (void *)hook_static_check, (void **)&orig_static_check},
     };
     rebind_symbols(rebinds, sizeof(rebinds) / sizeof(rebinds[0]));
 
