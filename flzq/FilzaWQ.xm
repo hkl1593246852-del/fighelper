@@ -127,6 +127,38 @@ static void WQOneTarget(NSString *path, NSString *group) {
            bestLabel, best, WQProbe(path)]);
 }
 
+static void WQShowAlert(NSString *text) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *root = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                if (window.isKeyWindow && window.rootViewController != nil) {
+                    root = window.rootViewController;
+                    break;
+                }
+            }
+            if (root != nil) {
+                break;
+            }
+        }
+        if (root == nil) {
+            return;
+        }
+
+        UIAlertController *alert =
+            [UIAlertController alertControllerWithTitle:@"filzawq"
+                                                message:text
+                                         preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [root presentViewController:alert animated:YES completion:nil];
+    });
+}
+
 static void WQGrantAll(void) {
     // Visible proof that this dylib is running, independent of any file write.
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -170,6 +202,13 @@ static void WQGrantAll(void) {
         NSString *file = [dir stringByAppendingPathComponent:@"filzawq.log"];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
+
+    // Show the first lines on screen: the log file can be unreachable when the
+    // sandbox is intact, which is exactly the case we are diagnosing.
+    NSArray *lines = [text componentsSeparatedByString:@"\n"];
+    NSUInteger shown = MIN((NSUInteger)14, lines.count);
+    NSString *head = [[lines subarrayWithRange:NSMakeRange(0, shown)] componentsJoinedByString:@"\n"];
+    WQShowAlert(head);
 }
 
 __attribute__((constructor))
