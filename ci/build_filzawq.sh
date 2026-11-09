@@ -17,10 +17,18 @@ echo "==> Theos at $THEOS"
 if [ ! -d "$THEOS" ]; then
   git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
 fi
-if [ ! -d "$THEOS/sdks" ] || [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
-  git clone --depth 1 https://github.com/theos/sdks "$THEOS/sdks"
-fi
 export THEOS
+
+# Use the iOS SDK that ships with the runner's Xcode instead of theos/sdks.
+if SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" && [ -d "$SYSROOT" ]; then
+  export SYSROOT
+  echo "    SYSROOT=$SYSROOT"
+else
+  echo "==> No Xcode iOS SDK; falling back to theos/sdks"
+  if [ ! -d "$THEOS/sdks" ] || [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
+    git clone --depth 1 https://github.com/theos/sdks "$THEOS/sdks"
+  fi
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -32,8 +40,8 @@ cp "$ROOT/flzq/Wq.h"       "$WORK/proj/"
 cp "$ROOT/flz/Wq.m"        "$WORK/proj/"
 
 cat > "$WORK/proj/Makefile" <<'MK'
-ARCHS = arm64 arm64e
-TARGET = iphone:clang:16.5:15.0
+ARCHS = arm64
+TARGET = iphone:clang:latest:15.0
 INSTALL_TARGET_PROCESSES = Filza
 
 include $(THEOS)/makefiles/common.mk
