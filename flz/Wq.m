@@ -8,6 +8,7 @@
 
 #import <dirent.h>
 #import <dlfcn.h>
+#import <sys/fsgetpath.h>
 #import <sys/mount.h>
 #import <sys/stat.h>
 #import <unistd.h>
