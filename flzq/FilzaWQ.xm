@@ -1,44 +1,22 @@
 // FilzaWQ.xm - grant Filza container access through worse_query.
 //
-// Injected into Filza's binary. On load it asks containermanagerd for sandbox
-// extensions covering the container roots, by pointing an app group's
-// Library/Caches symlink at each one in turn.
+// Loaded in place of Frameworks/lib7z.framework/lib7z, which the main binary
+// already links; nothing in Filza's main executable changes, so its
+// Filza.signature check still passes.
 //
-// The group is read from the app's own entitlements at runtime, so whichever
-// group the signing profile carries is the one used. Without an app-group
-// entitlement every call returns -1 and the log says so.
+// Every private API is resolved with dlsym at runtime: linking SecTask*
+// directly makes dyld abort at launch when the symbol is not exported.
 
 #import <Foundation/Foundation.h>
-#import <Security/Security.h>
 #import <UIKit/UIKit.h>
+#import <dlfcn.h>
 #import <os/log.h>
 
 #import "Wq.h"
-#import "fishhook.h"
 
-// Filza validates its own signature and shows "Main binary was modified" once the
-// binary carries an injected LC_LOAD_DYLIB. Making the validity check succeed is
-// enough; the code object itself is still created normally. The Security types
-// stay opaque here so no private header is needed.
-static void *orig_static_check;
-static int hook_static_check(void *code, uint32_t flags, void *requirement) {
-    return 0;   // errSecSuccess
-}
-
-// SecTask lives in the private Security headers; declare just what is needed.
-// The tweak compiles as Objective-C++, so these need C linkage to match the
-// dylib's exported symbols.
-#ifdef __cplusplus
-extern "C" {
-#endif
 typedef struct __SecTask *WQSecTask;
-extern WQSecTask SecTaskCreateFromSelf(CFAllocatorRef allocator);
-extern CFTypeRef SecTaskCopyValueForEntitlement(WQSecTask task,
-                                                CFStringRef entitlement,
-                                                CFErrorRef *error);
-#ifdef __cplusplus
-}
-#endif
+typedef WQSecTask (*SecTaskCreateFromSelf_t)(CFAllocatorRef);
+typedef CFTypeRef (*SecTaskCopyValueForEntitlement_t)(WQSecTask, CFStringRef, CFErrorRef *);
 
 static NSString *const kFallbackGroup = @"group.com.you.filzalite";
 
@@ -58,14 +36,18 @@ static os_log_t WQLog(void) {
     return log;
 }
 
-/// First app group listed in our own entitlements, or nil when the profile
-/// carries none.
+/// First app group in our own entitlements, or nil when the profile carries none.
 static NSString *WQGroupFromEntitlements(void) {
-    WQSecTask task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+    SecTaskCreateFromSelf_t create =
+        (SecTaskCreateFromSelf_t)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
+    SecTaskCopyValueForEntitlement_t copy =
+        (SecTaskCopyValueForEntitlement_t)dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement");
+    if (create == NULL || copy == NULL) return nil;
+
+    WQSecTask task = create(kCFAllocatorDefault);
     if (task == NULL) return nil;
 
-    CFTypeRef value = SecTaskCopyValueForEntitlement(
-        task, CFSTR("com.apple.security.application-groups"), NULL);
+    CFTypeRef value = copy(task, CFSTR("com.apple.security.application-groups"), NULL);
     CFRelease(task);
     if (value == NULL) return nil;
 
@@ -105,20 +87,16 @@ static void WQGrantAll(void) {
         os_log_fault(WQLog(), "%{public}@ mode=%d handle=%lld", p, used, h);
     }
 
-    // Breadcrumb inside Filza's own Documents.
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *path = [docs stringByAppendingPathComponent:@"filzawq.log"];
-    [[[report componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"]
-        writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if (docs.length > 0) {
+        NSString *path = [docs stringByAppendingPathComponent:@"filzawq.log"];
+        [[[report componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"]
+            writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
 }
 
-%ctor {
-    struct rebinding rebinds[] = {
-        {"SecStaticCodeCheckValidity", (void *)hook_static_check, (void **)&orig_static_check},
-        {"SecStaticCodeCheckValidityWithErrors", (void *)hook_static_check, (void **)&orig_static_check},
-    };
-    rebind_symbols(rebinds, sizeof(rebinds) / sizeof(rebinds[0]));
-
+__attribute__((constructor))
+static void FilzaWQInit(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
