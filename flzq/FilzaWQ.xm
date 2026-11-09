@@ -4,16 +4,25 @@
 // extensions covering the container roots, by pointing an app group's
 // Library/Caches symlink at each one in turn.
 //
-// Requirement: the IPA must be signed with a provisioning profile that carries
-// com.apple.security.application-groups. Without it WQAccess returns -1.
+// The group is read from the app's own entitlements at runtime, so whichever
+// group the signing profile carries is the one used. Without an app-group
+// entitlement every call returns -1 and the log says so.
 
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 #import <UIKit/UIKit.h>
 #import <os/log.h>
 
 #import "Wq.h"
 
-static NSString *const kGroup = @"group.com.you.filzalite";
+// SecTask lives in the private Security headers; declare just what is needed.
+typedef struct __SecTask *WQSecTask;
+extern WQSecTask SecTaskCreateFromSelf(CFAllocatorRef allocator);
+extern CFTypeRef SecTaskCopyValueForEntitlement(WQSecTask task,
+                                                CFStringRef entitlement,
+                                                CFErrorRef *error);
+
+static NSString *const kFallbackGroup = @"group.com.you.filzalite";
 
 static NSString *const kTargets[] = {
     @"/var/mobile/Containers/Data/Application",
@@ -31,22 +40,54 @@ static os_log_t WQLog(void) {
     return log;
 }
 
+/// First app group listed in our own entitlements, or nil when the profile
+/// carries none.
+static NSString *WQGroupFromEntitlements(void) {
+    WQSecTask task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+    if (task == NULL) return nil;
+
+    CFTypeRef value = SecTaskCopyValueForEntitlement(
+        task, CFSTR("com.apple.security.application-groups"), NULL);
+    CFRelease(task);
+    if (value == NULL) return nil;
+
+    NSString *group = nil;
+    if (CFGetTypeID(value) == CFArrayGetTypeID() && CFArrayGetCount((CFArrayRef)value) > 0) {
+        CFTypeRef first = CFArrayGetValueAtIndex((CFArrayRef)value, 0);
+        if (CFGetTypeID(first) == CFStringGetTypeID()) {
+            group = [NSString stringWithString:(__bridge NSString *)first];
+        }
+    }
+    CFRelease(value);
+    return group;
+}
+
 static void WQGrantAll(void) {
+    NSString *group = WQGroupFromEntitlements();
     NSMutableArray<NSString *> *report = [NSMutableArray array];
+
+    [report addObject:[NSString stringWithFormat:@"group=%@", group ?: @"(none)"]];
+    os_log_fault(WQLog(), "app group = %{public}@", group ?: @"(none)");
+
+    if (group.length == 0) {
+        [report addObject:@"no com.apple.security.application-groups entitlement"];
+    }
+
+    NSString *effective = group.length > 0 ? group : kFallbackGroup;
 
     for (size_t i = 0; i < sizeof(kTargets) / sizeof(kTargets[0]); i++) {
         NSString *p = kTargets[i];
-        int64_t h = WQAccess(p, kGroup, 0);
+        int64_t h = WQAccess(p, effective, 0);
         int used = 0;
         if (h < 0 && h != -255) {
-            h = WQAccess(p, kGroup, 1);      // iOS 26.x flag set
+            h = WQAccess(p, effective, 1);      // iOS 26.x flag set
             used = 1;
         }
         [report addObject:[NSString stringWithFormat:@"%@ mode=%d handle=%lld", p, used, h]];
         os_log_fault(WQLog(), "%{public}@ mode=%d handle=%lld", p, used, h);
     }
 
-    // Leave a breadcrumb the user can read from Filza itself.
+    // Breadcrumb inside Filza's own Documents.
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     NSString *path = [docs stringByAppendingPathComponent:@"filzawq.log"];
     [[[report componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"]
@@ -59,7 +100,6 @@ static void WQGrantAll(void) {
         WQGrantAll();
     });
 
-    // Filza re-checks roots when it returns to the foreground; redo the grants.
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
