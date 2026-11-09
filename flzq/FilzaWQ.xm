@@ -4,9 +4,10 @@
 // already links; nothing in Filza's main executable changes, so its
 // Filza.signature check still passes.
 //
-// The container query takes an operation flag and a part; which pair works is
-// undocumented and changes between releases, so the pairs are tried in order and
-// the first success is kept. Every attempt lands in Documents/filzawq.log.
+// The container query only accepts part 3 (Library/Caches) and one of two flag
+// constants: 0x0000008000000000 on iOS 27, 0x0000000800000000 on iOS 26.x.
+// Other combinations make containermanagerd hand back a malformed result and
+// copy_sandbox_token traps inside libxpc, so exactly these two are tried.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -31,10 +32,7 @@ static NSString *const kTargets[6] = {
     @"/var/containers/Data/System",
 };
 
-// part 1 = Data, 2 = Shared, 3 = Library/Caches, 4 = tmp
-static const uint64_t kFlags[3] = { 0x8000000000000000ULL, 0x0000000800000000ULL, 0ULL };
-static const char *const kFlagNames[3] = { "f27", "f26", "f0" };
-static const uint64_t kParts[4] = { 3, 1, 2, 4 };
+static const char *const kVariantNames[2] = { "f27", "f26" };
 
 static NSMutableArray *gReport;
 
@@ -97,21 +95,16 @@ static void WQOneTarget(NSString *path, NSString *group) {
     int64_t best = -255;
     NSString *bestLabel = @"none";
 
-    for (int f = 0; f < 3 && best < 0; f++) {
-        for (int p = 0; p < 4; p++) {
-            int64_t handle = WQAccessEx(path, group, kFlags[f], kParts[p]);
-            NSString *label = [NSString stringWithFormat:@"%s part %llu",
-                               kFlagNames[f], (unsigned long long)kParts[p]];
-            WQNote([NSString stringWithFormat:@"  %@ handle %lld", label, handle]);
-            if (handle >= 0) {
-                best = handle;
-                bestLabel = label;
-                break;
-            }
-            if (handle != -1 && best == -255) {
-                best = handle;
-                bestLabel = label;
-            }
+    for (int v = 0; v < 2; v++) {
+        int64_t handle = WQAccess(path, group, v);
+        NSString *label = [NSString stringWithUTF8String:kVariantNames[v]];
+        WQNote([NSString stringWithFormat:@"  %@ handle %lld", label, handle]);
+        if (handle != -255) {
+            best = handle;
+            bestLabel = label;
+        }
+        if (handle >= 0) {
+            break;
         }
     }
 
