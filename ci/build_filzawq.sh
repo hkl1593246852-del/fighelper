@@ -1,11 +1,18 @@
 #!/bin/bash
-# Build FilzaWQ.dylib with Theos, inject it into a Filza IPA, repackage unsigned.
+# Build FilzaWQ.dylib and load it into Filza without modifying the main binary.
+#
+# Filza ships Filza.signature: a 256-byte signature over its main executable, so
+# adding LC_LOAD_DYLIB trips "Main binary was modified" and the check cannot be
+# satisfied at runtime. Instead this replaces an already-linked framework with a
+# re-exporting dylib:
+#
+#   Frameworks/lib7z.framework/lib7z        -> our dylib (constructor runs)
+#   Frameworks/lib7z.framework/lib7z_orig   -> the real lib7z, re-exported
+#
+# The main binary keeps its original load command, so it stays byte-identical and
+# the signature check still passes.
 #
 # Usage: ci/build_filzawq.sh <Filza.ipa> [out.ipa]
-#
-# Environment:
-#   THEOS   Theos root (default ~/theos)
-#   SIGN    "1" to ad-hoc sign the result (default), "0" to leave it unsigned
 set -euo pipefail
 
 IPA="${1:?usage: build_filzawq.sh <Filza.ipa> [out.ipa]}"
@@ -19,7 +26,6 @@ if [ ! -d "$THEOS" ]; then
 fi
 export THEOS
 
-# Use the iOS SDK that ships with the runner's Xcode instead of theos/sdks.
 if SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" && [ -d "$SYSROOT" ]; then
   export SYSROOT
   echo "    SYSROOT=$SYSROOT"
@@ -33,34 +39,6 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "==> Staging tweak project"
-mkdir -p "$WORK/proj"
-cp "$ROOT/flzq/FilzaWQ.xm" "$WORK/proj/"
-cp "$ROOT/flzq/Wq.h"       "$WORK/proj/"
-cp "$ROOT/flz/Wq.m"        "$WORK/proj/"
-
-cat > "$WORK/proj/Makefile" <<'MK'
-ARCHS = arm64
-TARGET = iphone:clang:latest:15.0
-INSTALL_TARGET_PROCESSES = Filza
-
-include $(THEOS)/makefiles/common.mk
-
-TWEAK_NAME = FilzaWQ
-FilzaWQ_FILES = FilzaWQ.xm Wq.m $(THEOS)/vendor/orion/fishhook/fishhook.c
-FilzaWQ_CFLAGS = -fobjc-arc -I$(THEOS_PROJECT_DIR) -I$(THEOS)/vendor/orion/fishhook
-FilzaWQ_FRAMEWORKS = Foundation UIKit Security
-# fishhook rebinds the symbol table entries, so no substrate and no Logos hooks.
-
-include $(THEOS)/makefiles/tweak.mk
-MK
-
-echo "==> Building dylib"
-( cd "$WORK/proj" && make clean >/dev/null 2>&1 || true; make FINALPACKAGE=1 )
-DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | head -n 1)"
-[ -n "$DYLIB" ] || { echo "dylib not produced"; exit 1; }
-echo "    $DYLIB ($(stat -c%s "$DYLIB" 2>/dev/null || stat -f%z "$DYLIB") bytes)"
-
 echo "==> Unpacking Filza IPA"
 mkdir -p "$WORK/ipa"
 unzip -q "$IPA" -d "$WORK/ipa"
@@ -72,38 +50,53 @@ BIN="$APP/$EXEC_NAME"
 echo "    app=$APP"
 echo "    bin=$BIN"
 
-echo "==> Injecting"
-mkdir -p "$APP/Frameworks"
-cp "$DYLIB" "$APP/Frameworks/FilzaWQ.dylib"
-if ! command -v insert_dylib >/dev/null 2>&1; then
-  echo "insert_dylib not found; installing"
-  ( cd "$WORK" && git clone -q --depth 1 https://github.com/Tyilo/insert_dylib.git && \
-    cd insert_dylib && xcodebuild -quiet -project insert_dylib.xcodeproj -target insert_dylib \
-      CONFIGURATION_BUILD_DIR="$WORK/bin" >/dev/null && \
-    cp "$WORK/bin/insert_dylib" /usr/local/bin/ )
-fi
-insert_dylib --inplace --strip-codesig --all-yes \
-  "@executable_path/Frameworks/FilzaWQ.dylib" "$BIN"
+REHOST="$APP/Frameworks/lib7z.framework/lib7z"
+[ -f "$REHOST" ] || { echo "rehost target $REHOST missing"; exit 1; }
+
+echo "==> Moving the original lib7z aside"
+cp "$REHOST" "$WORK/lib7z_orig.dylib"
+install_name_tool -id "@rpath/lib7z.framework/lib7z_orig" "$WORK/lib7z_orig.dylib"
+cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z.framework/lib7z_orig"
+
+echo "==> Staging tweak project"
+mkdir -p "$WORK/proj"
+cp "$ROOT/flzq/FilzaWQ.xm" "$WORK/proj/"
+cp "$ROOT/flzq/Wq.h"       "$WORK/proj/"
+cp "$ROOT/flz/Wq.m"        "$WORK/proj/"
+
+cat > "$WORK/proj/Makefile" <<MK
+ARCHS = arm64
+TARGET = iphone:clang:latest:15.0
+INSTALL_TARGET_PROCESSES = Filza
+
+include \$(THEOS)/makefiles/common.mk
+
+TWEAK_NAME = FilzaWQ
+FilzaWQ_FILES = FilzaWQ.xm Wq.m \$(THEOS)/vendor/orion/fishhook/fishhook.c
+FilzaWQ_CFLAGS = -fobjc-arc -I\$(THEOS_PROJECT_DIR) -I\$(THEOS)/vendor/orion/fishhook
+FilzaWQ_FRAMEWORKS = Foundation UIKit Security
+FilzaWQ_LDFLAGS = -Wl,-install_name,@rpath/lib7z.framework/lib7z \\
+                  -Wl,-reexport_library,$WORK/lib7z_orig.dylib
+
+include \$(THEOS)/makefiles/tweak.mk
+MK
+
+echo "==> Building dylib"
+( cd "$WORK/proj" && make clean >/dev/null 2>&1 || true; make FINALPACKAGE=1 )
+DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | head -n 1)"
+[ -n "$DYLIB" ] || { echo "dylib not produced"; exit 1; }
+echo "    $DYLIB ($(stat -f%z "$DYLIB") bytes)"
+
+echo "==> Installing as lib7z"
+cp "$DYLIB" "$REHOST"
 
 echo "==> Signing"
-if [ "${SIGN:-1}" = "1" ]; then
-  ENT="$(mktemp)"
-  cp "$ROOT/flzq/filza.entitlements" "$ENT" 2>/dev/null || cat > "$ENT" <<'PL'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>com.apple.security.application-groups</key>
-  <array><string>group.com.you.filzalite</string></array>
-</dict></plist>
-PL
-  find "$APP" -name '*.dylib' -exec codesign -f -s - {} \;
-  codesign -f -s - --entitlements "$ENT" "$BIN"
-  codesign -f -s - "$APP"
-fi
+find "$APP" -name '*.dylib' -exec codesign -f -s - {} \; 2>/dev/null || true
+codesign -f -s - "$APP" 2>/dev/null || true
 
 echo "==> Packaging"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 ( cd "$WORK/ipa" && zip -qry "$ROOT/$OUT" Payload )
-echo "==> Done: $OUT ($(stat -c%s "$ROOT/$OUT" 2>/dev/null || stat -f%z "$ROOT/$OUT") bytes)"
+echo "==> Done: $OUT ($(stat -f%z "$ROOT/$OUT") bytes)"
 shasum -a 256 "$ROOT/$OUT"
