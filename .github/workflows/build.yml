@@ -46,33 +46,45 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tail -n 200
 
+      - name: Build filzalite
+        run: |
+          set -o pipefail
+          xcodebuild -project fighelper.xcodeproj -target filzalite \
+            -configuration Release -sdk iphoneos -arch arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tail -n 200
+
       - name: Locate bundles
         run: |
-          F=$(find . -name 'fighelper.app' -maxdepth 5 -type d | head -n 1)
-          D=$(find . -name 'dovipoc.app' -maxdepth 5 -type d | head -n 1)
-          echo "F=$F"; echo "D=$D"
-          test -n "$F"; test -n "$D"
+          F=$(find . -name 'fighelper.app' -maxdepth 6 -type d | head -n 1)
+          D=$(find . -name 'dovipoc.app' -maxdepth 6 -type d | head -n 1)
+          L=$(find . -name 'filzalite.app' -maxdepth 6 -type d | head -n 1)
+          echo "F=$F"; echo "D=$D"; echo "L=$L"
+          test -n "$F"; test -n "$D"; test -n "$L"
           echo "F_APP=$F" >> "$GITHUB_ENV"
           echo "D_APP=$D" >> "$GITHUB_ENV"
+          echo "L_APP=$L" >> "$GITHUB_ENV"
 
       - name: Diagnostics
         run: |
-          echo "== dovipoc contents =="
-          ls -l "$D_APP" | head -n 20
-          echo "== resources =="
+          echo "== filzalite contents =="
+          ls -l "$L_APP" | head -n 20
+          echo "== dovipoc resources =="
           ls -l "$D_APP"/*.bin || true
 
       - name: Package IPAs
         run: |
-          rm -rf stage1 stage2
-          mkdir -p stage1/Payload stage2/Payload
+          rm -rf stage1 stage2 stage3
+          mkdir -p stage1/Payload stage2/Payload stage3/Payload
           cp -R "$F_APP" stage1/Payload/
           cp -R "$D_APP" stage2/Payload/
+          cp -R "$L_APP" stage3/Payload/
           ( cd stage1 && zip -qry ../fighelper-unsigned.ipa Payload )
           ( cd stage2 && zip -qry ../dovipoc-unsigned.ipa Payload )
+          ( cd stage3 && zip -qry ../filzalite-unsigned.ipa Payload )
           ls -l *.ipa
-          echo "== payload layout =="
-          unzip -l dovipoc-unsigned.ipa | head -n 12
+          echo "== filzalite layout =="
+          unzip -l filzalite-unsigned.ipa | head -n 12
           shasum -a 256 *.ipa | tee sha256.txt
 
       - uses: actions/upload-artifact@v4
@@ -81,5 +93,6 @@ jobs:
           path: |
             fighelper-unsigned.ipa
             dovipoc-unsigned.ipa
+            filzalite-unsigned.ipa
             sha256.txt
           retention-days: 30

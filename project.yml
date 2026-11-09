@@ -62,3 +62,29 @@ targets:
         ENABLE_BITCODE: NO
         ONLY_ACTIVE_ARCH: NO
         ARCHS: arm64
+
+  filzalite:
+    type: application
+    platform: iOS
+    sources:
+      - path: flz
+        excludes:
+          - Info.plist
+          - filzalite.entitlements
+    info:
+      path: flz/Info.plist
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: flz/filzalite.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.you.filzalite
+        PRODUCT_NAME: filzalite
+        SWIFT_OBJC_BRIDGING_HEADER: flz/Bridge.h
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        SWIFT_VERSION: "5.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_BITCODE: NO
+        ONLY_ACTIVE_ARCH: NO
+        ARCHS: arm64
