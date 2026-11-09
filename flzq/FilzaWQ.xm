@@ -14,9 +14,43 @@
 #import <dirent.h>
 #import <dlfcn.h>
 #import <errno.h>
+#import <string.h>
 #import <sys/stat.h>
 
 #import "Wq.h"
+
+// Filza resolves its self-check through dlsym instead of a normal import, so the
+// only reliable way to neutralise it is to interpose dlsym itself. dyld applies
+// __DATA,__interpose at load time, before the app's first lookup.
+static int WQCheckOK(void *code, uint32_t flags, void *requirement) {
+    return 0;   // errSecSuccess
+}
+
+static int WQCheckOKWithErrors(void *code, uint32_t flags, void *requirement, void *errors) {
+    return 0;
+}
+
+static void *(*WQOrigDlsym)(void *, const char *);
+
+static void *WQDlsym(void *handle, const char *symbol) {
+    if (symbol != NULL) {
+        if (strcmp(symbol, "SecStaticCodeCheckValidity") == 0) {
+            return (void *)WQCheckOK;
+        }
+        if (strcmp(symbol, "SecStaticCodeCheckValidityWithErrors") == 0) {
+            return (void *)WQCheckOKWithErrors;
+        }
+    }
+    return WQOrigDlsym(handle, symbol);
+}
+
+__attribute__((used)) static struct {
+    const void *replacement;
+    const void *replacee;
+} WQInterposeDlsym __attribute__((section("__DATA,__interpose"))) = {
+    (const void *)WQDlsym,
+    (const void *)dlsym,
+};
 
 typedef struct __SecTask *WQSecTask;
 typedef WQSecTask (*WQCreateTask)(CFAllocatorRef);
