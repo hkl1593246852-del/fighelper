@@ -14,6 +14,7 @@
 #import <dirent.h>
 #import <dlfcn.h>
 #import <errno.h>
+#import <sys/stat.h>
 
 #import "Wq.h"
 
@@ -89,6 +90,20 @@ static NSString *WQProbe(NSString *path) {
     return [NSString stringWithFormat:@"opendir ok entries %d", count];
 }
 
+/// What the process can reach before any extension is requested. With the
+/// MobileHouseArrest identity this already succeeds; with a plain app identity
+/// it fails with EPERM, which separates "identity worked" from "extension
+/// worked".
+static void WQBaseline(void) {
+    NSString *path = @"/var/mobile/Containers/Data/Application";
+
+    struct stat st;
+    errno = 0;
+    int rc = stat([path fileSystemRepresentation], &st);
+    WQNote([NSString stringWithFormat:@"baseline stat %d errno %d", rc, errno]);
+    WQNote([@"baseline " stringByAppendingString:WQProbe(path)]);
+}
+
 static void WQOneTarget(NSString *path, NSString *group) {
     WQNote([@"--- " stringByAppendingString:path]);
 
@@ -127,6 +142,8 @@ static void WQGrantAll(void) {
     }
 
     WQNote([@"home " stringByAppendingString:NSHomeDirectory()]);
+    WQNote([@"bundle " stringByAppendingString:[[NSBundle mainBundle] bundleIdentifier] ?: @"?"]);
+    WQBaseline();
 
     for (int i = 0; i < 6; i++) {
         WQOneTarget(kTargets[i], group);
