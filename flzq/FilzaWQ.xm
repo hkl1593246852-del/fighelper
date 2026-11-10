@@ -1,4 +1,4 @@
-﻿// FilzaWQ.xm - worse_query container access plus an app list for Filza.
+// FilzaWQ.xm - worse_query container access plus an app list for Filza.
 //
 // Loaded through the FilzaApplySandboxExt slot the base already links, so the
 // main binary and its load commands stay untouched.
