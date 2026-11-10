@@ -311,33 +311,86 @@ static NSArray<WQApp *> *WQCollectApps(void) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-static UIViewController *WQRootController(void) {
+static UIWindow *WQKeyWindow(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.isKeyWindow && window.rootViewController != nil) return window.rootViewController;
+            if (window.isKeyWindow) return window;
+        }
+    }
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.rootViewController != nil) return window;
         }
     }
     return nil;
+}
+
+/// Walk to the controller that is actually on top, so presenting never targets a
+/// controller that is already covered.
+static UIViewController *WQTopController(void) {
+    UIViewController *vc = WQKeyWindow().rootViewController;
+    if (vc == nil) return nil;
+    while (vc.presentedViewController != nil) {
+        vc = vc.presentedViewController;
+    }
+    return vc;
+}
+
+static NSInteger gPresentTries;
+static BOOL gPresented;
+
+static void WQTryPresentApps(void) {
+    if (gPresented) return;
+    if (WQKeyWindow() == nil) return;
+
+    UIViewController *top = WQTopController();
+    if (top == nil || top.view.window == nil) return;
+
+    // Skip controllers that are themselves an alert we are about to sweep.
+    if (WQIsTamperAlert(top)) {
+        [top dismissViewControllerAnimated:NO completion:nil];
+        return;
+    }
+
+    WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    [top presentViewController:nav animated:YES completion:^{ gPresented = YES; }];
 }
 
 __attribute__((constructor))
 static void FilzaWQInit(void) {
     WQInstallAlertFilter();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
+        [UIApplication sharedApplication].applicationIconBadgeNumber = 1;
 
-        WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        UIViewController *root = WQRootController();
-        if (root != nil && root.presentedViewController == nil) {
-            [root presentViewController:nav animated:YES completion:nil];
-        }
+        // Retry for a minute: Filza shows its own launch UI first, and a single
+        // attempt after a fixed delay silently gives up when that is on screen.
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+            WQSweepAlerts(WQKeyWindow().rootViewController);
 
-        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
-            WQSweepAlerts(WQRootController());
+            gPresentTries++;
+            if (gPresentTries > 120) {
+                [timer invalidate];
+                return;
+            }
+            WQTryPresentApps();
+
+            if (gPresented) {
+                [timer invalidate];
+            }
+        }];
+
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationDidBecomeActiveNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+            WQGrantAll();
         }];
     });
 }
