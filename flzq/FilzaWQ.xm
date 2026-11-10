@@ -43,6 +43,7 @@ static NSInteger gDataCount;
 static NSInteger gBundleCount;
 static NSString *gReadableRoot;
 static NSInteger gReadableCount;
+static NSInteger gMetaRead;
 
 // ---------------------------------------------------------------------------
 // Entitlements and extensions
@@ -240,6 +241,7 @@ static NSArray<WQApp *> *WQCollectApps(void) {
                                   [path stringByAppendingPathComponent:
                                    @".com.apple.mobile_container_manager.metadata.plist"]];
             NSString *ident = meta[@"MCMMetadataIdentifier"];
+            if (ident.length > 0) gMetaRead++;
 
             WQApp *app = [WQApp new];
             app.bundleID = name;
@@ -308,8 +310,8 @@ static NSArray<WQApp *> *WQCollectApps(void) {
         label.numberOfLines = 0;
         label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
         label.text = [NSString stringWithFormat:
-                      @"group %@\nroot %@ (%ld)\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
-                      gGroup, gReadableRoot ?: @"-", (long)gReadableCount,
+                      @"group %@\nroot %@ (%ld, meta %ld)\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
+                      gGroup, gReadableRoot ?: @"-", (long)gReadableCount, (long)gMetaRead,
                       gBaseline, (long)gBundleCount, (long)gDataCount, gGranted];
         label;
     });
@@ -400,6 +402,54 @@ static UIViewController *WQTopController(void) {
 static NSInteger gPresentTries;
 static BOOL gPresented;
 
+static UIButton *gFab;
+static id gFabTarget;
+
+@interface WQFabTarget : NSObject
+@end
+
+@implementation WQFabTarget
+
+- (void)tap {
+    UIViewController *top = WQTopController();
+    if (top == nil || top.view.window == nil) return;
+    WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    [top presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)pan:(UIPanGestureRecognizer *)gesture {
+    UIView *view = gesture.view;
+    if (view == nil) return;
+    CGPoint delta = [gesture translationInView:view.superview];
+    view.center = CGPointMake(view.center.x + delta.x, view.center.y + delta.y);
+    [gesture setTranslation:CGPointZero inView:view.superview];
+}
+
+@end
+
+static void WQInstallFab(void) {
+    if (gFab != nil) return;
+    UIWindow *window = WQKeyWindow();
+    if (window == nil) return;
+
+    if (gFabTarget == nil) {
+        gFabTarget = [WQFabTarget new];
+    }
+
+    gFab = [UIButton buttonWithType:UIButtonTypeCustom];
+    gFab.frame = CGRectMake(14, 150, 54, 54);
+    gFab.layer.cornerRadius = 27;
+    gFab.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
+    [gFab setTitle:@"容器" forState:UIControlStateNormal];
+    [gFab setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    gFab.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    [gFab addTarget:gFabTarget action:@selector(tap) forControlEvents:UIControlEventTouchUpInside];
+    [gFab addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:gFabTarget
+                                                                     action:@selector(pan:)]];
+    [window addSubview:gFab];
+}
+
 static void WQTryPresentApps(void) {
     if (gPresented) return;
     if (WQKeyWindow() == nil) return;
@@ -427,6 +477,10 @@ static void FilzaWQInit(void) {
         WQGrantAll();
         [UIApplication sharedApplication].applicationIconBadgeNumber = 1;
 
+        // No automatic sheet: Filza's own browser is the main surface. A small
+        // floating button opens the container list on demand.
+        WQInstallFab();
+
         // Retry for a minute: Filza shows its own launch UI first, and a single
         // attempt after a fixed delay silently gives up when that is on screen.
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
@@ -437,10 +491,8 @@ static void FilzaWQInit(void) {
                 [timer invalidate];
                 return;
             }
-            WQTryPresentApps();
-
-            if (gPresented) {
-                [timer invalidate];
+            if (gFab == nil || gFab.superview == nil) {
+                WQInstallFab();
             }
         }];
 
