@@ -144,10 +144,24 @@ else
   cp "$DYLIB" "$REHOST"
 fi
 
-echo "==> Signing"
-codesign -f -s - "$APP/Frameworks/lib7z_orig.dylib" 2>/dev/null || true
-find "$APP/Frameworks" -maxdepth 2 \( -name '*.dylib' -o -name '*.framework' \) -exec codesign -f -s - {} \; 2>/dev/null || true
-codesign -f -s - "$APP" 2>/dev/null || true
+echo "==> Stripping all signatures"
+# The packaging tool re-signs every Mach-O itself. Leaving our ad-hoc signatures
+# in place makes its output fail install-time verification ("unable to verify app
+# integrity"), so everything we touched is left unsigned.
+strip_sig() {
+  [ -f "$1" ] || return 0
+  codesign --remove-signature "$1" 2>/dev/null || true
+}
+strip_sig "$BIN"
+strip_sig "$SLOT"
+strip_sig "$REHOST"
+strip_sig "$APP/Frameworks/lib7z_orig.dylib"
+for fw in "$APP"/Frameworks/*.framework; do
+  [ -d "$fw" ] || continue
+  name="$(basename "$fw" .framework)"
+  strip_sig "$fw/$name"
+done
+rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision" 2>/dev/null || true
 
 echo "==> Packaging"
 mkdir -p "$(dirname "$OUT")"
