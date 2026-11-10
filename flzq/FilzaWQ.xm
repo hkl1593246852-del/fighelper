@@ -291,6 +291,38 @@ static NSString *WQDiagnostics(void) {
 @end
 
 // ---------------------------------------------------------------------------
+// Silencing Filza's tamper alert
+//
+// The message is fetched through Filza's string table at runtime, so it cannot be
+// located statically. Dropping the presentation is enough: the check only
+// produces this alert.
+// ---------------------------------------------------------------------------
+
+static void (*WQOrigPresent)(id, SEL, UIViewController *, BOOL, void (^)(void));
+
+static void WQPresent(id self, SEL cmd, UIViewController *vc, BOOL animated, void (^completion)(void)) {
+    if ([vc isKindOfClass:[UIAlertController class]]) {
+        NSString *message = [(UIAlertController *)vc message];
+        if (message != nil && [message containsString:@"Main binary was modified"]) {
+            if (completion != nil) completion();
+            return;
+        }
+    }
+    if (WQOrigPresent != NULL) {
+        WQOrigPresent(self, cmd, vc, animated, completion);
+    }
+}
+
+static void WQInstallAlertFilter(void) {
+    Method m = class_getInstanceMethod([UIViewController class],
+                                       @selector(presentViewController:animated:completion:));
+    if (m == NULL) return;
+    WQOrigPresent = (void (*)(id, SEL, UIViewController *, BOOL, void (^)(void)))
+        method_getImplementation(m);
+    method_setImplementation(m, (IMP)WQPresent);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -315,6 +347,8 @@ static void WQPresentApps(void) {
 
 __attribute__((constructor))
 static void FilzaWQInit(void) {
+    WQInstallAlertFilter();
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
