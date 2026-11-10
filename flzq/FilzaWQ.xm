@@ -235,10 +235,16 @@ static NSArray<WQApp *> *WQCollectApps(void) {
     if (gReadableRoot != nil && WQCountEntries(kDataRoot, NULL) <= 0) {
         NSMutableArray<WQApp *> *rows = [NSMutableArray array];
         for (NSString *name in [fm contentsOfDirectoryAtPath:gReadableRoot error:nil]) {
+            NSString *path = [gReadableRoot stringByAppendingPathComponent:name];
+            NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+                                  [path stringByAppendingPathComponent:
+                                   @".com.apple.mobile_container_manager.metadata.plist"]];
+            NSString *ident = meta[@"MCMMetadataIdentifier"];
+
             WQApp *app = [WQApp new];
             app.bundleID = name;
-            app.displayName = name;
-            app.containerPath = [gReadableRoot stringByAppendingPathComponent:name];
+            app.displayName = ident.length > 0 ? ident : name;
+            app.containerPath = path;
             [rows addObject:app];
         }
         [rows sortUsingComparator:^NSComparisonResult(WQApp *a, WQApp *b) {
@@ -302,8 +308,9 @@ static NSArray<WQApp *> *WQCollectApps(void) {
         label.numberOfLines = 0;
         label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
         label.text = [NSString stringWithFormat:
-                      @"group %@\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
-                      gGroup, gBaseline, (long)gBundleCount, (long)gDataCount, gGranted];
+                      @"group %@\nroot %@ (%ld)\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
+                      gGroup, gReadableRoot ?: @"-", (long)gReadableCount,
+                      gBaseline, (long)gBundleCount, (long)gDataCount, gGranted];
         label;
     });
 
