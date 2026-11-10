@@ -68,13 +68,12 @@ if [ "$MODE" = "rehost" ]; then
   cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
 fi
 
-echo "==> Disabling Filza's self-check lookup"
-# Filza resolves the code-signing verifier with dlsym. Renaming the symbol it asks
-# for makes the lookup fail, and the check is skipped. Same length, so no offsets
-# move.
-python3 - "$BIN" <<'PY'
+if [ "$MODE" = "slot" ]; then
+  echo "==> Disabling Filza's self-check lookup"
+  # Only safe on a base that is already patched: renaming changes the main binary,
+  # which the stock 5.0.x Filza.signature check would notice.
+  python3 - "$BIN" <<'PY'
 import sys
-
 path = sys.argv[1]
 data = bytearray(open(path, "rb").read())
 targets = [
@@ -83,7 +82,6 @@ targets = [
 ]
 patched = 0
 for old, new in targets:
-    assert len(old) == len(new)
     n = data.count(old)
     if n:
         data = data.replace(old, new)
@@ -93,6 +91,9 @@ if patched == 0:
     print("  no lookup strings found")
 open(path, "wb").write(data)
 PY
+else
+  echo "==> Main binary left untouched (rehost mode)"
+fi
 
 echo "==> Staging tweak project"
 mkdir -p "$WORK/proj"
