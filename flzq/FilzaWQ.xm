@@ -399,8 +399,6 @@ static UIViewController *WQTopController(void) {
     return vc;
 }
 
-static NSInteger gPresentTries;
-static BOOL gPresented;
 
 static UIButton *gFab;
 static id gFabTarget;
@@ -448,24 +446,6 @@ static void WQInstallFab(void) {
     [gFab addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:gFabTarget
                                                                      action:@selector(pan:)]];
     [window addSubview:gFab];
-}
-
-static void WQTryPresentApps(void) {
-    if (gPresented) return;
-    if (WQKeyWindow() == nil) return;
-
-    UIViewController *top = WQTopController();
-    if (top == nil || top.view.window == nil) return;
-
-    // Skip controllers that are themselves an alert we are about to sweep.
-    if (WQIsTamperAlert(top)) {
-        [top dismissViewControllerAnimated:NO completion:nil];
-        return;
-    }
-
-    WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    [top presentViewController:nav animated:YES completion:^{ gPresented = YES; }];
 }
 
 __attribute__((constructor))
