@@ -90,17 +90,40 @@ static void WQGrantAll(void) {
     NSString *group = WQOwnGroup();
     gGroup = group.length > 0 ? group : @"(none)";
 
-    NSMutableArray *ok = [NSMutableArray array];
+    // part 3 is Library/Caches (the documented one); 1 = Data, 2 = Shared,
+    // 4 = tmp. With the correct flag constants the extra parts are safe to try,
+    // and some roots only answer to one of them.
+    const uint64_t parts[4] = {3, 1, 2, 4};
+    const uint64_t flags[2] = {0x0000008000000000ULL, 0x0000000800000000ULL};
+    const char *flagNames[2] = {"27", "26"};
+
+    NSMutableArray *summary = [NSMutableArray array];
+
     for (int i = 0; i < 7; i++) {
         int64_t best = -255;
-        for (int v = 0; v < 2; v++) {
-            int64_t h = WQAccess(kTargets[i], gGroup, v);
-            if (h >= 0) { best = h; break; }
-            if (h != -255) best = h;
+        NSString *combo = @"-";
+
+        for (int f = 0; f < 2 && best < 0; f++) {
+            for (int p = 0; p < 4; p++) {
+                int64_t h = WQAccessEx(kTargets[i], gGroup, flags[f], parts[p]);
+                if (h >= 0) {
+                    best = h;
+                    combo = [NSString stringWithFormat:@"p%llu/%s",
+                             (unsigned long long)parts[p], flagNames[f]];
+                    break;
+                }
+                if (h != -255) {
+                    best = h;
+                    combo = [NSString stringWithFormat:@"%lld", h];
+                }
+            }
         }
-        [ok addObject:[NSString stringWithFormat:@"%lld", best]];
+
+        [summary addObject:[NSString stringWithFormat:@"%@=%@", combo,
+                            best >= 0 ? [NSString stringWithFormat:@"%lld", best] : @""]];
     }
-    gGranted = [ok componentsJoinedByString:@","];
+
+    gGranted = [summary componentsJoinedByString:@" "];
 
     int err = 0;
     gDataCount = WQCountEntries(kDataRoot, &err);
