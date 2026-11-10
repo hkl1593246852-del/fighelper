@@ -124,6 +124,40 @@ static NSString *WQProbe(NSString *path) {
     return [NSString stringWithFormat:@"opendir ok entries %d", count];
 }
 
+/// Map every UUID under the app data root to its bundle identifier.
+///
+/// Filza's own App Manager enumerates through MobileContainerManager, which hides
+/// third-party apps since iOS 26, so it comes up empty even with the extension in
+/// place. Walking the directory and reading each container's metadata gives the
+/// same mapping without that API.
+static NSString *WQAppIndex(NSString *root) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSError *err = nil;
+    NSArray<NSString *> *uuids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:&err];
+    if (uuids == nil) {
+        return [NSString stringWithFormat:@"index failed: %@", err.localizedDescription ?: @"?"];
+    }
+
+    for (NSString *uuid in uuids) {
+        NSString *container = [root stringByAppendingPathComponent:uuid];
+        NSString *meta = [container stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:meta];
+        NSString *bundle = info[@"MCMMetadataIdentifier"] ?: @"?";
+        [lines addObject:[NSString stringWithFormat:@"%@  %@", bundle, uuid]];
+    }
+
+    [lines sortUsingSelector:@selector(compare:)];
+    NSString *text = [lines componentsJoinedByString:@"\n"];
+
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count > 0) {
+        NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq-apps.txt"];
+        [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+
+    return [NSString stringWithFormat:@"indexed %lu apps", (unsigned long)lines.count];
+}
+
 /// What the process can reach before any extension is requested. With the
 /// MobileHouseArrest identity this already succeeds; with a plain app identity
 /// it fails with EPERM, which separates "identity worked" from "extension
@@ -214,6 +248,8 @@ static void WQGrantAll(void) {
     for (int i = 0; i < 6; i++) {
         WQOneTarget(kTargets[i], group);
     }
+
+    WQNote(WQAppIndex(kTargets[0]));
 
     NSString *text = [[gReport componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
 
