@@ -1,14 +1,11 @@
 // FilzaWQ.xm - worse_query container access plus an app list for Filza.
 //
-// Loaded through the FilzaApplySandboxExt slot that the base already links, so
-// the main binary and its load commands stay untouched.
+// Loaded through the FilzaApplySandboxExt slot the base already links, so the
+// main binary and its load commands stay untouched.
 //
-// Three jobs:
-//   1. neutralise Filza's self-check, which it resolves through dlsym
-//   2. consume sandbox extensions for the container roots (worse_query)
-//   3. present an app list with icons, because Filza's own App Manager
-//      enumerates through MobileContainerManager, which hides third-party apps
-//      since iOS 26 and comes up empty
+// Everything the build needs to prove about itself is shown in one screen:
+// whether the dylib ran, which app group the signature carries, how many
+// containers and bundles were readable, and whether the extensions landed.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -20,40 +17,6 @@
 #import <sys/stat.h>
 
 #import "Wq.h"
-
-// ---------------------------------------------------------------------------
-// Self-check: Filza looks the verifier up by name, so interpose dlsym.
-// ---------------------------------------------------------------------------
-
-static int WQCheckOK(void *code, uint32_t flags, void *requirement) { return 0; }
-static int WQCheckOKErr(void *code, uint32_t flags, void *requirement, void *errors) { return 0; }
-
-static void *(*WQOrigDlsym)(void *, const char *);
-static void *WQDlsym(void *handle, const char *symbol);
-
-__attribute__((used)) static struct {
-    const void *replacement;
-    const void *replacee;
-} WQInterposeDlsym __attribute__((section("__DATA,__interpose"))) = {
-    (const void *)WQDlsym,
-    (const void *)dlsym,
-};
-
-static void *WQDlsym(void *handle, const char *symbol) {
-    if (WQOrigDlsym == NULL) {
-        // The tuple keeps the unrewritten address, which is the real dlsym.
-        WQOrigDlsym = (void *(*)(void *, const char *))WQInterposeDlsym.replacee;
-    }
-    if (symbol != NULL) {
-        if (strcmp(symbol, "SecStaticCodeCheckValidity") == 0) return (void *)WQCheckOK;
-        if (strcmp(symbol, "SecStaticCodeCheckValidityWithErrors") == 0) return (void *)WQCheckOKErr;
-    }
-    return WQOrigDlsym(handle, symbol);
-}
-
-// ---------------------------------------------------------------------------
-// Container roots
-// ---------------------------------------------------------------------------
 
 typedef struct __SecTask *WQSecTask;
 typedef WQSecTask (*WQCreateTask)(CFAllocatorRef);
@@ -72,6 +35,16 @@ static NSString *const kTargets[7] = {
     @"/var/containers/Data/System",
     @"/var/containers/Bundle/Application",
 };
+
+static NSString *gGroup;
+static NSString *gBaseline;
+static NSString *gGranted;
+static NSInteger gDataCount;
+static NSInteger gBundleCount;
+
+// ---------------------------------------------------------------------------
+// Entitlements and extensions
+// ---------------------------------------------------------------------------
 
 static NSString *WQOwnGroup(void) {
     WQCreateTask create = (WQCreateTask)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
@@ -99,14 +72,86 @@ static NSString *WQOwnGroup(void) {
     return group;
 }
 
+static NSInteger WQCountEntries(NSString *path, int *err) {
+    errno = 0;
+    DIR *dp = opendir(path.fileSystemRepresentation);
+    if (dp == NULL) {
+        if (err != NULL) *err = errno;
+        return -1;
+    }
+    NSInteger n = 0;
+    while (readdir(dp) != NULL) n++;
+    closedir(dp);
+    if (err != NULL) *err = 0;
+    return n;
+}
+
 static void WQGrantAll(void) {
     NSString *group = WQOwnGroup();
-    NSString *effective = group.length > 0 ? group : kGroupFallback;
+    gGroup = group.length > 0 ? group : @"(none)";
 
+    NSMutableArray *ok = [NSMutableArray array];
     for (int i = 0; i < 7; i++) {
+        int64_t best = -255;
         for (int v = 0; v < 2; v++) {
-            if (WQAccess(kTargets[i], effective, v) >= 0) break;
+            int64_t h = WQAccess(kTargets[i], gGroup, v);
+            if (h >= 0) { best = h; break; }
+            if (h != -255) best = h;
         }
+        [ok addObject:[NSString stringWithFormat:@"%lld", best]];
+    }
+    gGranted = [ok componentsJoinedByString:@","];
+
+    int err = 0;
+    gDataCount = WQCountEntries(kDataRoot, &err);
+    gBaseline = [NSString stringWithFormat:@"%ld (errno %d)", (long)gDataCount, err];
+
+    gBundleCount = WQCountEntries(kBundleRoot, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Tamper-alert suppression
+// ---------------------------------------------------------------------------
+
+static BOOL WQIsTamperAlert(UIViewController *vc) {
+    if (![vc isKindOfClass:[UIAlertController class]]) return NO;
+    NSString *message = [(UIAlertController *)vc message];
+    NSString *title = [(UIAlertController *)vc title];
+    return ([message rangeOfString:@"Main binary was modified"].location != NSNotFound ||
+            [title rangeOfString:@"Main binary was modified"].location != NSNotFound);
+}
+
+/// Filza may present from a controller that overrides presentViewController:, so
+/// besides filtering that method a timer sweeps whatever ended up on screen.
+static void WQSweepAlerts(UIViewController *root) {
+    if (root == nil) return;
+    UIViewController *presented = root.presentedViewController;
+    while (presented != nil) {
+        if (WQIsTamperAlert(presented)) {
+            [presented dismissViewControllerAnimated:NO completion:nil];
+            return;
+        }
+        presented = presented.presentedViewController;
+    }
+}
+
+static void (*WQOrigPresent)(id, SEL, UIViewController *, BOOL, void (^)(void));
+
+static void WQPresent(id self, SEL cmd, UIViewController *vc, BOOL animated, void (^completion)(void)) {
+    if (WQIsTamperAlert(vc)) {
+        if (completion != nil) completion();
+        return;
+    }
+    if (WQOrigPresent != NULL) WQOrigPresent(self, cmd, vc, animated, completion);
+}
+
+static void WQInstallAlertFilter(void) {
+    Method m = class_getInstanceMethod([UIViewController class],
+                                       @selector(presentViewController:animated:completion:));
+    if (m != NULL) {
+        WQOrigPresent = (void (*)(id, SEL, UIViewController *, BOOL, void (^)(void)))
+            method_getImplementation(m);
+        method_setImplementation(m, (IMP)WQPresent);
     }
 }
 
@@ -118,7 +163,6 @@ static void WQGrantAll(void) {
 @property (nonatomic, copy) NSString *bundleID;
 @property (nonatomic, copy) NSString *displayName;
 @property (nonatomic, copy) NSString *containerPath;
-@property (nonatomic, copy) NSString *bundlePath;
 @property (nonatomic, strong) UIImage *icon;
 @end
 
@@ -127,22 +171,20 @@ static void WQGrantAll(void) {
 
 static UIImage *WQIconForBundle(NSString *bundlePath) {
     if (bundlePath.length == 0) return nil;
-
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
                           [bundlePath stringByAppendingPathComponent:@"Info.plist"]];
     NSMutableArray *names = [NSMutableArray array];
-
     id icons = info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"];
     if ([icons isKindOfClass:[NSArray class]]) [names addObjectsFromArray:icons];
     id legacy = info[@"CFBundleIconFiles"];
     if ([legacy isKindOfClass:[NSArray class]]) [names addObjectsFromArray:legacy];
-    if (names.count == 0) [names addObject:@"AppIcon60x60"];
+    [names addObject:@"AppIcon60x60"];
+    [names addObject:@"AppIcon"];
 
     NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundlePath error:nil];
     for (NSString *base in [names reverseObjectEnumerator]) {
         for (NSString *file in contents) {
-            if (![file hasPrefix:base]) continue;
-            if (![file hasSuffix:@".png"]) continue;
+            if (![file hasPrefix:base] || ![file hasSuffix:@".png"]) continue;
             UIImage *img = [UIImage imageWithContentsOfFile:
                             [bundlePath stringByAppendingPathComponent:file]];
             if (img != nil) return img;
@@ -165,9 +207,7 @@ static NSArray<WQApp *> *WQCollectApps(void) {
             NSString *bid = info[@"CFBundleIdentifier"];
             if (bid.length == 0) continue;
             bundles[bid] = @{ @"path": appPath,
-                              @"name": info[@"CFBundleDisplayName"]
-                                      ?: info[@"CFBundleName"]
-                                      ?: bid };
+                              @"name": info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: bid };
         }
     }
 
@@ -178,15 +218,13 @@ static NSArray<WQApp *> *WQCollectApps(void) {
                               [container stringByAppendingPathComponent:
                                @".com.apple.mobile_container_manager.metadata.plist"]];
         NSString *bid = meta[@"MCMMetadataIdentifier"];
-        if (bid.length == 0) continue;
 
         WQApp *app = [WQApp new];
-        app.bundleID = bid;
+        app.bundleID = bid.length > 0 ? bid : @"(unknown)";
         app.containerPath = container;
-        NSDictionary *b = bundles[bid];
-        app.bundlePath = b[@"path"] ?: @"";
-        app.displayName = b[@"name"] ?: bid;
-        app.icon = WQIconForBundle(app.bundlePath);
+        NSDictionary *b = bid.length > 0 ? bundles[bid] : nil;
+        app.displayName = b[@"name"] ?: (bid.length > 0 ? bid : uuid);
+        app.icon = WQIconForBundle(b[@"path"]);
         [apps addObject:app];
     }
 
@@ -194,14 +232,6 @@ static NSArray<WQApp *> *WQCollectApps(void) {
         return [a.displayName localizedCaseInsensitiveCompare:b.displayName];
     }];
     return apps;
-}
-
-static NSString *WQDiagnostics(void) {
-    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    if (docs.count == 0) return @"no documents dir";
-    NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
-    NSString *text = [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil];
-    return text.length > 0 ? text : @"no diagnostics yet";
 }
 
 @interface WQAppsController : UITableViewController
@@ -214,28 +244,24 @@ static NSString *WQDiagnostics(void) {
     [super viewDidLoad];
     self.title = @"App 容器";
     self.apps = WQCollectApps();
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"诊断"
-                                         style:UIBarButtonItemStylePlain
-                                        target:self
-                                        action:@selector(showDiagnostics)];
+
+    self.tableView.tableHeaderView = ({
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 320, 92)];
+        label.numberOfLines = 0;
+        label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+        label.text = [NSString stringWithFormat:
+                      @"group %@\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
+                      gGroup, gBaseline, (long)gBundleCount, (long)gDataCount, gGranted];
+        label;
+    });
+
     self.navigationItem.leftBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:@"关闭"
-                                         style:UIBarButtonItemStylePlain
-                                        target:self
-                                        action:@selector(close)];
+        [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(close)];
 }
 
 - (void)close {
     [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)showDiagnostics {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"filzawq"
-                                                              message:WQDiagnostics()
-                                                       preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -251,9 +277,14 @@ static NSString *WQDiagnostics(void) {
     }
     WQApp *app = self.apps[indexPath.row];
     cell.textLabel.text = app.displayName;
+    cell.textLabel.font = [UIFont systemFontOfSize:15];
     cell.detailTextLabel.text = app.bundleID;
-    cell.imageView.image = app.icon ?: [UIImage systemImageNamed:@"square.grid.2x2"];
-    cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    cell.detailTextLabel.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    if (app.icon != nil) {
+        cell.imageView.image = app.icon;
+    } else {
+        cell.imageView.image = [UIImage systemImageNamed:@"square.grid.2x2.fill"];
+    }
     return cell;
 }
 
@@ -261,28 +292,13 @@ static NSString *WQDiagnostics(void) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     WQApp *app = self.apps[indexPath.row];
 
-    UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:app.displayName
-                         message:app.containerPath
-                  preferredStyle:UIAlertControllerStyleActionSheet];
-
-    [a addAction:[UIAlertAction actionWithTitle:@"复制路径"
-                                          style:UIAlertActionStyleDefault
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:app.displayName
+                                                              message:app.containerPath
+                                                       preferredStyle:UIAlertControllerStyleActionSheet];
+    [a addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
                                         handler:^(UIAlertAction *x) {
         [UIPasteboard generalPasteboard].string = app.containerPath;
     }]];
-
-    [a addAction:[UIAlertAction actionWithTitle:@"在 Filza 中打开"
-                                          style:UIAlertActionStyleDefault
-                                        handler:^(UIAlertAction *x) {
-        NSString *rel = [app.containerPath stringByReplacingOccurrencesOfString:@"/private" withString:@""];
-        NSString *url = [@"filza://view" stringByAppendingString:rel];
-        NSURL *u = [NSURL URLWithString:url];
-        if (u != nil) {
-            [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:nil];
-        }
-    }]];
-
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     a.popoverPresentationController.sourceView = tableView;
     a.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
@@ -292,75 +308,36 @@ static NSString *WQDiagnostics(void) {
 @end
 
 // ---------------------------------------------------------------------------
-// Silencing Filza's tamper alert
-//
-// The message is fetched through Filza's string table at runtime, so it cannot be
-// located statically. Dropping the presentation is enough: the check only
-// produces this alert.
-// ---------------------------------------------------------------------------
-
-static void (*WQOrigPresent)(id, SEL, UIViewController *, BOOL, void (^)(void));
-
-static void WQPresent(id self, SEL cmd, UIViewController *vc, BOOL animated, void (^completion)(void)) {
-    if ([vc isKindOfClass:[UIAlertController class]]) {
-        NSString *message = [(UIAlertController *)vc message];
-        if (message != nil && [message containsString:@"Main binary was modified"]) {
-            if (completion != nil) completion();
-            return;
-        }
-    }
-    if (WQOrigPresent != NULL) {
-        WQOrigPresent(self, cmd, vc, animated, completion);
-    }
-}
-
-static void WQInstallAlertFilter(void) {
-    Method m = class_getInstanceMethod([UIViewController class],
-                                       @selector(presentViewController:animated:completion:));
-    if (m == NULL) return;
-    WQOrigPresent = (void (*)(id, SEL, UIViewController *, BOOL, void (^)(void)))
-        method_getImplementation(m);
-    method_setImplementation(m, (IMP)WQPresent);
-}
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-static void WQPresentApps(void) {
-    UIViewController *root = nil;
+static UIViewController *WQRootController(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.isKeyWindow && window.rootViewController != nil) {
-                root = window.rootViewController;
-                break;
-            }
+            if (window.isKeyWindow && window.rootViewController != nil) return window.rootViewController;
         }
-        if (root != nil) break;
     }
-    if (root == nil || root.presentedViewController != nil) return;
-
-    WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    [root presentViewController:nav animated:YES completion:nil];
+    return nil;
 }
 
 __attribute__((constructor))
 static void FilzaWQInit(void) {
     WQInstallAlertFilter();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
-        WQPresentApps();
-    });
 
-    [[NSNotificationCenter defaultCenter]
-        addObserverForName:UIApplicationDidBecomeActiveNotification
-                    object:nil
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *note) {
-                    WQGrantAll();
-                }];
+        WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        UIViewController *root = WQRootController();
+        if (root != nil && root.presentedViewController == nil) {
+            [root presentViewController:nav animated:YES completion:nil];
+        }
+
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            WQSweepAlerts(WQRootController());
+        }];
+    });
 }
