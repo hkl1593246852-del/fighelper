@@ -34,7 +34,8 @@ static void WQCleanSymlink(NSString *group) {
     [files createDirectoryAtURL:caches withIntermediateDirectories:NO attributes:nil error:nil];
 }
 
-int64_t WQAccessEx(NSString *path, NSString *group, uint64_t flags, uint64_t part) {
+static int64_t WQAccessImpl(NSString *path, NSString *group, uint64_t flags,
+                               uint64_t part, BOOL keep) {
     if (path.length == 0) return -255;
 
     NSFileManager *files = [NSFileManager defaultManager];
@@ -109,8 +110,21 @@ int64_t WQAccessEx(NSString *path, NSString *group, uint64_t flags, uint64_t par
     qFree(query);
     free(token);
     dlclose(mgr);
-    WQCleanSymlink(group);
+    // A sandbox extension is matched by path prefix. While the caller still needs
+    // the target, <group>/Library/Caches has to remain a symlink pointing at it,
+    // otherwise the prefix no longer resolves and every open() is denied again.
+    if (!keep) {
+        WQCleanSymlink(group);
+    }
     return handle;
+}
+
+int64_t WQAccessEx(NSString *path, NSString *group, uint64_t flags, uint64_t part) {
+    return WQAccessImpl(path, group, flags, part, NO);
+}
+
+int64_t WQAccessKeep(NSString *path, NSString *group, uint64_t flags, uint64_t part) {
+    return WQAccessImpl(path, group, flags, part, YES);
 }
 
 int64_t WQAccess(NSString *path, NSString *group, int mode) {
