@@ -1,13 +1,14 @@
-// FilzaWQ.xm - grant Filza container access through worse_query.
+// FilzaWQ.xm - worse_query container access plus an app list for Filza.
 //
-// Loaded in place of Frameworks/lib7z.framework/lib7z, which the main binary
-// already links; nothing in Filza's main executable changes, so its
-// Filza.signature check still passes.
+// Loaded through the FilzaApplySandboxExt slot that the base already links, so
+// the main binary and its load commands stay untouched.
 //
-// The container query only accepts part 3 (Library/Caches) and one of two flag
-// constants: 0x0000008000000000 on iOS 27, 0x0000000800000000 on iOS 26.x.
-// Other combinations make containermanagerd hand back a malformed result and
-// copy_sandbox_token traps inside libxpc, so exactly these two are tried.
+// Three jobs:
+//   1. neutralise Filza's self-check, which it resolves through dlsym
+//   2. consume sandbox extensions for the container roots (worse_query)
+//   3. present an app list with icons, because Filza's own App Manager
+//      enumerates through MobileContainerManager, which hides third-party apps
+//      since iOS 26 and comes up empty
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -19,30 +20,15 @@
 
 #import "Wq.h"
 
-// Filza resolves its self-check through dlsym instead of a normal import, so the
-// only reliable way to neutralise it is to interpose dlsym itself. dyld applies
-// __DATA,__interpose at load time, before the app's first lookup.
-static int WQCheckOK(void *code, uint32_t flags, void *requirement) {
-    return 0;   // errSecSuccess
-}
+// ---------------------------------------------------------------------------
+// Self-check: Filza looks the verifier up by name, so interpose dlsym.
+// ---------------------------------------------------------------------------
 
-static int WQCheckOKWithErrors(void *code, uint32_t flags, void *requirement, void *errors) {
-    return 0;
-}
+static int WQCheckOK(void *code, uint32_t flags, void *requirement) { return 0; }
+static int WQCheckOKErr(void *code, uint32_t flags, void *requirement, void *errors) { return 0; }
 
 static void *(*WQOrigDlsym)(void *, const char *);
-
-static void *WQDlsym(void *handle, const char *symbol) {
-    if (symbol != NULL) {
-        if (strcmp(symbol, "SecStaticCodeCheckValidity") == 0) {
-            return (void *)WQCheckOK;
-        }
-        if (strcmp(symbol, "SecStaticCodeCheckValidityWithErrors") == 0) {
-            return (void *)WQCheckOKWithErrors;
-        }
-    }
-    return WQOrigDlsym(handle, symbol);
-}
+static void *WQDlsym(void *handle, const char *symbol);
 
 __attribute__((used)) static struct {
     const void *replacement;
@@ -52,49 +38,51 @@ __attribute__((used)) static struct {
     (const void *)dlsym,
 };
 
+static void *WQDlsym(void *handle, const char *symbol) {
+    if (WQOrigDlsym == NULL) {
+        // The tuple keeps the unrewritten address, which is the real dlsym.
+        WQOrigDlsym = (void *(*)(void *, const char *))WQInterposeDlsym.replacee;
+    }
+    if (symbol != NULL) {
+        if (strcmp(symbol, "SecStaticCodeCheckValidity") == 0) return (void *)WQCheckOK;
+        if (strcmp(symbol, "SecStaticCodeCheckValidityWithErrors") == 0) return (void *)WQCheckOKErr;
+    }
+    return WQOrigDlsym(handle, symbol);
+}
+
+// ---------------------------------------------------------------------------
+// Container roots
+// ---------------------------------------------------------------------------
+
 typedef struct __SecTask *WQSecTask;
 typedef WQSecTask (*WQCreateTask)(CFAllocatorRef);
 typedef CFTypeRef (*WQCopyEnt)(WQSecTask, CFStringRef, CFErrorRef *);
 
-static NSString *const kGroupFallback = @"group.com.you.filzalite";
+static NSString *const kGroupFallback = @"group.com.filza.wq";
+static NSString *const kDataRoot = @"/var/mobile/Containers/Data/Application";
+static NSString *const kBundleRoot = @"/var/containers/Bundle/Application";
 
-static NSString *const kTargets[6] = {
+static NSString *const kTargets[7] = {
     @"/var/mobile/Containers/Data/Application",
     @"/var/mobile/Containers/Data/InternalDaemon",
     @"/var/mobile/Containers/Data/PluginKitPlugin",
     @"/var/mobile/Containers/Shared/AppGroup",
     @"/var/containers/Shared/SystemGroup",
     @"/var/containers/Data/System",
+    @"/var/containers/Bundle/Application",
 };
-
-static const char *const kVariantNames[2] = { "f27", "f26" };
-
-static NSMutableArray *gReport;
-
-static void WQNote(NSString *line) {
-    if (gReport == nil) {
-        gReport = [NSMutableArray array];
-    }
-    [gReport addObject:line];
-}
 
 static NSString *WQOwnGroup(void) {
     WQCreateTask create = (WQCreateTask)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
     WQCopyEnt copy = (WQCopyEnt)dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement");
-    if (create == NULL || copy == NULL) {
-        return nil;
-    }
+    if (create == NULL || copy == NULL) return nil;
 
     WQSecTask task = create(kCFAllocatorDefault);
-    if (task == NULL) {
-        return nil;
-    }
+    if (task == NULL) return nil;
 
     CFTypeRef value = copy(task, CFSTR("com.apple.security.application-groups"), NULL);
     CFRelease(task);
-    if (value == NULL) {
-        return nil;
-    }
+    if (value == NULL) return nil;
 
     NSString *group = nil;
     if (CFGetTypeID(value) == CFArrayGetTypeID()) {
@@ -110,189 +98,223 @@ static NSString *WQOwnGroup(void) {
     return group;
 }
 
-static NSString *WQProbe(NSString *path) {
-    errno = 0;
-    DIR *dp = opendir([path fileSystemRepresentation]);
-    if (dp == NULL) {
-        return [NSString stringWithFormat:@"opendir errno %d", errno];
+static void WQGrantAll(void) {
+    NSString *group = WQOwnGroup();
+    NSString *effective = group.length > 0 ? group : kGroupFallback;
+
+    for (int i = 0; i < 7; i++) {
+        for (int v = 0; v < 2; v++) {
+            if (WQAccess(kTargets[i], effective, v) >= 0) break;
+        }
     }
-    int count = 0;
-    while (readdir(dp) != NULL) {
-        count++;
-    }
-    closedir(dp);
-    return [NSString stringWithFormat:@"opendir ok entries %d", count];
 }
 
-/// Map every UUID under the app data root to its bundle identifier.
-///
-/// Filza's own App Manager enumerates through MobileContainerManager, which hides
-/// third-party apps since iOS 26, so it comes up empty even with the extension in
-/// place. Walking the directory and reading each container's metadata gives the
-/// same mapping without that API.
-static NSString *WQAppIndex(NSString *root) {
-    NSMutableArray<NSString *> *lines = [NSMutableArray array];
-    NSError *err = nil;
-    NSArray<NSString *> *uuids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:&err];
-    if (uuids == nil) {
-        return [NSString stringWithFormat:@"index failed: %@", err.localizedDescription ?: @"?"];
+// ---------------------------------------------------------------------------
+// App list
+// ---------------------------------------------------------------------------
+
+@interface WQApp : NSObject
+@property (nonatomic, copy) NSString *bundleID;
+@property (nonatomic, copy) NSString *displayName;
+@property (nonatomic, copy) NSString *containerPath;
+@property (nonatomic, copy) NSString *bundlePath;
+@property (nonatomic, strong) UIImage *icon;
+@end
+
+@implementation WQApp
+@end
+
+static UIImage *WQIconForBundle(NSString *bundlePath) {
+    if (bundlePath.length == 0) return nil;
+
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                          [bundlePath stringByAppendingPathComponent:@"Info.plist"]];
+    NSMutableArray *names = [NSMutableArray array];
+
+    id icons = info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"];
+    if ([icons isKindOfClass:[NSArray class]]) [names addObjectsFromArray:icons];
+    id legacy = info[@"CFBundleIconFiles"];
+    if ([legacy isKindOfClass:[NSArray class]]) [names addObjectsFromArray:legacy];
+    if (names.count == 0) [names addObject:@"AppIcon60x60"];
+
+    NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundlePath error:nil];
+    for (NSString *base in [names reverseObjectEnumerator]) {
+        for (NSString *file in contents) {
+            if (![file hasPrefix:base]) continue;
+            if (![file hasSuffix:@".png"]) continue;
+            UIImage *img = [UIImage imageWithContentsOfFile:
+                            [bundlePath stringByAppendingPathComponent:file]];
+            if (img != nil) return img;
+        }
+    }
+    return nil;
+}
+
+static NSArray<WQApp *> *WQCollectApps(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableDictionary<NSString *, NSDictionary *> *bundles = [NSMutableDictionary dictionary];
+
+    for (NSString *uuid in [fm contentsOfDirectoryAtPath:kBundleRoot error:nil]) {
+        NSString *dir = [kBundleRoot stringByAppendingPathComponent:uuid];
+        for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+            if (![item hasSuffix:@".app"]) continue;
+            NSString *appPath = [dir stringByAppendingPathComponent:item];
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                                  [appPath stringByAppendingPathComponent:@"Info.plist"]];
+            NSString *bid = info[@"CFBundleIdentifier"];
+            if (bid.length == 0) continue;
+            bundles[bid] = @{ @"path": appPath,
+                              @"name": info[@"CFBundleDisplayName"]
+                                      ?: info[@"CFBundleName"]
+                                      ?: bid };
+        }
     }
 
-    for (NSString *uuid in uuids) {
-        NSString *container = [root stringByAppendingPathComponent:uuid];
-        NSString *meta = [container stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
-        NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:meta];
-        NSString *bundle = info[@"MCMMetadataIdentifier"] ?: @"?";
-        [lines addObject:[NSString stringWithFormat:@"%@  %@", bundle, uuid]];
+    NSMutableArray<WQApp *> *apps = [NSMutableArray array];
+    for (NSString *uuid in [fm contentsOfDirectoryAtPath:kDataRoot error:nil]) {
+        NSString *container = [kDataRoot stringByAppendingPathComponent:uuid];
+        NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+                              [container stringByAppendingPathComponent:
+                               @".com.apple.mobile_container_manager.metadata.plist"]];
+        NSString *bid = meta[@"MCMMetadataIdentifier"];
+        if (bid.length == 0) continue;
+
+        WQApp *app = [WQApp new];
+        app.bundleID = bid;
+        app.containerPath = container;
+        NSDictionary *b = bundles[bid];
+        app.bundlePath = b[@"path"] ?: @"";
+        app.displayName = b[@"name"] ?: bid;
+        app.icon = WQIconForBundle(app.bundlePath);
+        [apps addObject:app];
     }
 
-    [lines sortUsingSelector:@selector(compare:)];
-    NSString *text = [lines componentsJoinedByString:@"\n"];
+    [apps sortUsingComparator:^NSComparisonResult(WQApp *a, WQApp *b) {
+        return [a.displayName localizedCaseInsensitiveCompare:b.displayName];
+    }];
+    return apps;
+}
 
+static NSString *WQDiagnostics(void) {
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    if (docs.count > 0) {
-        NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq-apps.txt"];
-        [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if (docs.count == 0) return @"no documents dir";
+    NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
+    NSString *text = [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil];
+    return text.length > 0 ? text : @"no diagnostics yet";
+}
+
+@interface WQAppsController : UITableViewController
+@property (nonatomic, strong) NSArray<WQApp *> *apps;
+@end
+
+@implementation WQAppsController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"App 容器";
+    self.apps = WQCollectApps();
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"诊断"
+                                         style:UIBarButtonItemStylePlain
+                                        target:self
+                                        action:@selector(showDiagnostics)];
+    self.navigationItem.leftBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+                                         style:UIBarButtonItemStylePlain
+                                        target:self
+                                        action:@selector(close)];
+}
+
+- (void)close {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)showDiagnostics {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"filzawq"
+                                                              message:WQDiagnostics()
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.apps.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cellID = @"wqapp";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellID];
+    if (cell == nil) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:cellID];
     }
-
-    return [NSString stringWithFormat:@"indexed %lu apps", (unsigned long)lines.count];
+    WQApp *app = self.apps[indexPath.row];
+    cell.textLabel.text = app.displayName;
+    cell.detailTextLabel.text = app.bundleID;
+    cell.imageView.image = app.icon ?: [UIImage systemImageNamed:@"square.grid.2x2"];
+    cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    return cell;
 }
 
-/// What the process can reach before any extension is requested. With the
-/// MobileHouseArrest identity this already succeeds; with a plain app identity
-/// it fails with EPERM, which separates "identity worked" from "extension
-/// worked".
-static void WQBaseline(void) {
-    NSString *path = @"/var/mobile/Containers/Data/Application";
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    WQApp *app = self.apps[indexPath.row];
 
-    struct stat st;
-    errno = 0;
-    int rc = stat([path fileSystemRepresentation], &st);
-    WQNote([NSString stringWithFormat:@"baseline stat %d errno %d", rc, errno]);
-    WQNote([@"baseline " stringByAppendingString:WQProbe(path)]);
-}
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:app.displayName
+                         message:app.containerPath
+                  preferredStyle:UIAlertControllerStyleActionSheet];
 
-static void WQOneTarget(NSString *path, NSString *group) {
-    WQNote([@"--- " stringByAppendingString:path]);
+    [a addAction:[UIAlertAction actionWithTitle:@"复制路径"
+                                          style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        [UIPasteboard generalPasteboard].string = app.containerPath;
+    }]];
 
-    int64_t best = -255;
-    NSString *bestLabel = @"none";
-
-    for (int v = 0; v < 2; v++) {
-        int64_t handle = WQAccess(path, group, v);
-        NSString *label = [NSString stringWithUTF8String:kVariantNames[v]];
-        WQNote([NSString stringWithFormat:@"  %@ handle %lld", label, handle]);
-        if (handle != -255) {
-            best = handle;
-            bestLabel = label;
+    [a addAction:[UIAlertAction actionWithTitle:@"在 Filza 中打开"
+                                          style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        NSString *rel = [app.containerPath stringByReplacingOccurrencesOfString:@"/private" withString:@""];
+        NSString *url = [@"filza://view" stringByAppendingString:rel];
+        NSURL *u = [NSURL URLWithString:url];
+        if (u != nil) {
+            [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:nil];
         }
-        if (handle >= 0) {
-            break;
-        }
-    }
+    }]];
 
-    WQNote([NSString stringWithFormat:@"  best %@ handle %lld, %@",
-           bestLabel, best, WQProbe(path)]);
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = tableView;
+    a.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
-static void WQShowAlert(NSString *text) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+@end
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+__attribute__((constructor))
+static void FilzaWQInit(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        WQGrantAll();
+
         UIViewController *root = nil;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) {
-                continue;
-            }
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *window in ((UIWindowScene *)scene).windows) {
                 if (window.isKeyWindow && window.rootViewController != nil) {
                     root = window.rootViewController;
                     break;
                 }
             }
-            if (root != nil) {
-                break;
-            }
+            if (root != nil) break;
         }
-        if (root == nil) {
-            return;
-        }
+        if (root == nil) return;
 
-        UIAlertController *alert =
-            [UIAlertController alertControllerWithTitle:@"filzawq"
-                                                message:text
-                                         preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:nil]];
-        [root presentViewController:alert animated:YES completion:nil];
+        WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        [root presentViewController:nav animated:YES completion:nil];
     });
-}
-
-static void WQGrantAll(void) {
-    // Visible proof that this dylib is running, independent of any file write.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [UIApplication sharedApplication].applicationIconBadgeNumber = 1;
-    });
-
-    NSString *group = WQOwnGroup();
-    if (group.length == 0) {
-        WQNote(@"group none: no application-groups entitlement");
-        group = kGroupFallback;
-    } else {
-        WQNote([@"group " stringByAppendingString:group]);
-    }
-
-    WQNote([@"home " stringByAppendingString:NSHomeDirectory()]);
-    WQNote([@"bundle " stringByAppendingString:[[NSBundle mainBundle] bundleIdentifier] ?: @"?"]);
-    WQBaseline();
-
-    for (int i = 0; i < 6; i++) {
-        WQOneTarget(kTargets[i], group);
-    }
-
-    WQNote(WQAppIndex(kTargets[0]));
-
-    NSString *text = [[gReport componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
-
-    // Write to every writable location Filza itself can browse.
-    NSMutableArray *dirs = [NSMutableArray array];
-    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    if (docs.count > 0) {
-        [dirs addObject:[docs objectAtIndex:0]];
-    }
-    NSArray *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-    if (caches.count > 0) {
-        [dirs addObject:[caches objectAtIndex:0]];
-    }
-    [dirs addObject:NSTemporaryDirectory()];
-
-    for (NSString *dir in dirs) {
-        if (dir.length == 0) {
-            continue;
-        }
-        NSString *file = [dir stringByAppendingPathComponent:@"filzawq.log"];
-        [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
-
-    // Show the first lines on screen: the log file can be unreachable when the
-    // sandbox is intact, which is exactly the case we are diagnosing.
-    NSArray *lines = [text componentsSeparatedByString:@"\n"];
-    NSUInteger shown = MIN((NSUInteger)14, lines.count);
-    NSString *head = [[lines subarrayWithRange:NSMakeRange(0, shown)] componentsJoinedByString:@"\n"];
-    WQShowAlert(head);
-}
-
-__attribute__((constructor))
-static void FilzaWQInit(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        WQGrantAll();
-    });
-
-    [[NSNotificationCenter defaultCenter]
-        addObserverForName:UIApplicationDidBecomeActiveNotification
-                    object:nil
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *note) {
-                    WQGrantAll();
-                }];
 }
