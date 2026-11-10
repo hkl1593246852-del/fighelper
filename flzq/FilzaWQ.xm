@@ -294,27 +294,38 @@ static NSString *WQDiagnostics(void) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+static void WQPresentApps(void) {
+    UIViewController *root = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (window.isKeyWindow && window.rootViewController != nil) {
+                root = window.rootViewController;
+                break;
+            }
+        }
+        if (root != nil) break;
+    }
+    if (root == nil || root.presentedViewController != nil) return;
+
+    WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    [root presentViewController:nav animated:YES completion:nil];
+}
+
 __attribute__((constructor))
 static void FilzaWQInit(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
-
-        UIViewController *root = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (window.isKeyWindow && window.rootViewController != nil) {
-                    root = window.rootViewController;
-                    break;
-                }
-            }
-            if (root != nil) break;
-        }
-        if (root == nil) return;
-
-        WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        [root presentViewController:nav animated:YES completion:nil];
+        WQPresentApps();
     });
+
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidBecomeActiveNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+                    WQGrantAll();
+                }];
 }
