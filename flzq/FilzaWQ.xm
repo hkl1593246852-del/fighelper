@@ -41,6 +41,8 @@ static NSString *gBaseline;
 static NSString *gGranted;
 static NSInteger gDataCount;
 static NSInteger gBundleCount;
+static NSString *gReadableRoot;
+static NSInteger gReadableCount;
 
 // ---------------------------------------------------------------------------
 // Entitlements and extensions
@@ -121,6 +123,10 @@ static void WQGrantAll(void) {
 
         int perr = 0;
         NSInteger n = best >= 0 ? WQCountEntries(kTargets[i], &perr) : -1;
+        if (n > 0 && gReadableRoot == nil) {
+            gReadableRoot = kTargets[i];
+            gReadableCount = n;
+        }
         [summary addObject:[NSString stringWithFormat:@"%@=%@/%ld",
                             combo,
                             best >= 0 ? [NSString stringWithFormat:@"%lld", best] : @"",
@@ -222,6 +228,25 @@ static UIImage *WQIconForBundle(NSString *bundlePath) {
 
 static NSArray<WQApp *> *WQCollectApps(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
+
+    // The per-app data root is refused on iOS 27, so when it cannot be opened the
+    // reachable root is listed instead: Shared/AppGroup holds every app group
+    // container, Data/System the system ones.
+    if (gReadableRoot != nil && WQCountEntries(kDataRoot, NULL) <= 0) {
+        NSMutableArray<WQApp *> *rows = [NSMutableArray array];
+        for (NSString *name in [fm contentsOfDirectoryAtPath:gReadableRoot error:nil]) {
+            WQApp *app = [WQApp new];
+            app.bundleID = name;
+            app.displayName = name;
+            app.containerPath = [gReadableRoot stringByAppendingPathComponent:name];
+            [rows addObject:app];
+        }
+        [rows sortUsingComparator:^NSComparisonResult(WQApp *a, WQApp *b) {
+            return [a.displayName localizedCaseInsensitiveCompare:b.displayName];
+        }];
+        return rows;
+    }
+
     NSMutableDictionary<NSString *, NSDictionary *> *bundles = [NSMutableDictionary dictionary];
 
     for (NSString *uuid in [fm contentsOfDirectoryAtPath:kBundleRoot error:nil]) {
