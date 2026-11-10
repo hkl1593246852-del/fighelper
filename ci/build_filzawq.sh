@@ -68,6 +68,32 @@ if [ "$MODE" = "rehost" ]; then
   cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
 fi
 
+echo "==> Disabling Filza's self-check lookup"
+# Filza resolves the code-signing verifier with dlsym. Renaming the symbol it asks
+# for makes the lookup fail, and the check is skipped. Same length, so no offsets
+# move.
+python3 - "$BIN" <<'PY'
+import sys
+
+path = sys.argv[1]
+data = bytearray(open(path, "rb").read())
+targets = [
+    (b"SecStaticCodeCheckValidity", b"SecStaticCodeCheckValiditq"),
+    (b"SecStaticCodeCheckValidityWithErrors", b"SecStaticCodeCheckValiditqWithErrors"),
+]
+patched = 0
+for old, new in targets:
+    assert len(old) == len(new)
+    n = data.count(old)
+    if n:
+        data = data.replace(old, new)
+        patched += n
+        print(f"  renamed {old.decode()} x{n}")
+if patched == 0:
+    print("  no lookup strings found")
+open(path, "wb").write(data)
+PY
+
 echo "==> Staging tweak project"
 mkdir -p "$WORK/proj"
 cp "$ROOT/flzq/FilzaWQ.xm" "$WORK/proj/"
