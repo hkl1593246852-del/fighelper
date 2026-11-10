@@ -1,4 +1,4 @@
-// FilzaWQ.xm - worse_query container access plus an app list for Filza.
+﻿// FilzaWQ.xm - worse_query container access plus an app list for Filza.
 //
 // Loaded through the FilzaApplySandboxExt slot the base already links, so the
 // main binary and its load commands stay untouched.
@@ -23,17 +23,17 @@ typedef WQSecTask (*WQCreateTask)(CFAllocatorRef);
 typedef CFTypeRef (*WQCopyEnt)(WQSecTask, CFStringRef, CFErrorRef *);
 
 static NSString *const kGroupFallback = @"group.com.filza.wq";
-static NSString *const kDataRoot = @"/var/mobile/Containers/Data/Application";
-static NSString *const kBundleRoot = @"/var/containers/Bundle/Application";
+static NSString *const kDataRoot = @"/private/var/mobile/Containers/Data/Application";
+static NSString *const kBundleRoot = @"/private/var/containers/Bundle/Application";
 
 static NSString *const kTargets[7] = {
-    @"/var/mobile/Containers/Data/Application",
-    @"/var/mobile/Containers/Data/InternalDaemon",
-    @"/var/mobile/Containers/Data/PluginKitPlugin",
-    @"/var/mobile/Containers/Shared/AppGroup",
-    @"/var/containers/Shared/SystemGroup",
-    @"/var/containers/Data/System",
-    @"/var/containers/Bundle/Application",
+    @"/private/var/mobile/Containers/Data/Application",
+    @"/private/var/mobile/Containers/Data/InternalDaemon",
+    @"/private/var/mobile/Containers/Data/PluginKitPlugin",
+    @"/private/var/mobile/Containers/Shared/AppGroup",
+    @"/private/var/containers/Shared/SystemGroup",
+    @"/private/var/containers/Data/System",
+    @"/private/var/containers/Bundle/Application",
 };
 
 static NSString *gGroup;
