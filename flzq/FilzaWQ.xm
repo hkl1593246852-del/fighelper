@@ -105,7 +105,7 @@ static void WQGrantAll(void) {
 
         for (int f = 0; f < 2 && best < 0; f++) {
             for (int p = 0; p < 4; p++) {
-                int64_t h = WQAccessEx(kTargets[i], gGroup, flags[f], parts[p]);
+                int64_t h = WQAccessKeep(kTargets[i], gGroup, flags[f], parts[p]);
                 if (h >= 0) {
                     best = h;
                     combo = [NSString stringWithFormat:@"p%llu/%s",
@@ -119,8 +119,12 @@ static void WQGrantAll(void) {
             }
         }
 
-        [summary addObject:[NSString stringWithFormat:@"%@=%@", combo,
-                            best >= 0 ? [NSString stringWithFormat:@"%lld", best] : @""]];
+        int perr = 0;
+        NSInteger n = best >= 0 ? WQCountEntries(kTargets[i], &perr) : -1;
+        [summary addObject:[NSString stringWithFormat:@"%@=%@/%ld",
+                            combo,
+                            best >= 0 ? [NSString stringWithFormat:@"%lld", best] : @"",
+                            (long)n]];
     }
 
     gGranted = [summary componentsJoinedByString:@" "];
