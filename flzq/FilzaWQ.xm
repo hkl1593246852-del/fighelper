@@ -466,13 +466,10 @@ static void FilzaWQInit(void) {
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             WQSweepAlerts(WQKeyWindow().rootViewController);
 
-            gPresentTries++;
-            if (gPresentTries > 120) {
-                [timer invalidate];
-                return;
-            }
             if (gFab == nil || gFab.superview == nil) {
                 WQInstallFab();
+            } else {
+                [timer invalidate];
             }
         }];
 
