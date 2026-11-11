@@ -711,6 +711,11 @@ static void FilzaWQInit(void) {
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
         WQInstallFavorites();
-        [UIApplication sharedApplication].applicationIconBadgeNumber = 0;
+
+        // Filza re-checks itself when a screen loads; sweep whatever alert it
+        // manages to present.
+        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+            WQSweepAlerts(WQTopController());
+        }];
     });
 }
