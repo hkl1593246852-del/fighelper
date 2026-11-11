@@ -19,16 +19,14 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld llvm make perl zip unzip xz-utils
-          clang --version | head -n 2
-          perl --version | head -n 2
+          xcodebuild -version
+          brew install ldid xz 2>/dev/null || brew install ldid
 
       - name: Pick a base IPA
         run: |
