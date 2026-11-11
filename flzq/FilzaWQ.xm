@@ -57,6 +57,9 @@ static NSInteger gPerContainerOK;
 static NSMutableArray<NSString *> *gGrantedPaths;
 static NSInteger gNamedLinks;
 static NSInteger gTotalLinks;
+static NSInteger gDataPaths;
+static NSInteger gBundlePaths;
+static NSInteger gMetaRead;
 
 static void WQGrantPerContainer(NSString *root);
 
@@ -787,6 +790,15 @@ static NSString *WQBuildLinkFolder(void) {
         if (names[bid] != nil) gNamedLinks++;
     }
 
+    for (NSString *container in gGrantedPaths) {
+        if ([container rangeOfString:@"/Data/Application/"].location != NSNotFound) gDataPaths++;
+        if ([container rangeOfString:@"/Bundle/Application/"].location != NSNotFound) gBundlePaths++;
+        NSDictionary *m = [NSDictionary dictionaryWithContentsOfFile:
+                           [container stringByAppendingPathComponent:
+                            @".com.apple.mobile_container_manager.metadata.plist"]];
+        if (m != nil) gMetaRead++;
+    }
+
     // A readable manifest makes it easy to check what resolved to what.
     NSMutableString *manifest = [NSMutableString string];
     for (NSString *container in gGrantedPaths) {
@@ -927,12 +939,14 @@ static void WQInstallFavorites(void) {
             @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n"
              "mcm identifiers %ld, activated %ld\n"
              "per-container found %ld, granted %ld\n"
-             "named %ld/%ld\nlinks %@\nsigning %@\n",
+             "named %ld/%ld\n"
+             "paths data=%ld bundle=%ld meta=%ld\nlinks %@\nsigning %@\n",
             gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-",
             prefs != nil ? @"ok" : @"nil", (unsigned long)added,
             (long)gMcmIDs, (long)gMcmPaths,
             (long)gPerContainerFound, (long)gPerContainerOK,
             (long)gNamedLinks, (long)gTotalLinks,
+            (long)gDataPaths, (long)gBundlePaths, (long)gMetaRead,
             gLinkRoot ?: @"-", gSigningID ?: WQSigningIdentifier()];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
