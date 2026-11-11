@@ -48,6 +48,8 @@ static NSInteger gReadableCount;
 static NSInteger gMetaRead;
 static NSInteger gChildGrants;
 static NSInteger gChildFiles;
+static NSInteger gMcmIDs;
+static NSInteger gMcmPaths;
 
 static void WQGrantChildren(NSString *root, NSString *group, NSInteger limit);
 
@@ -682,9 +684,13 @@ static NSString *WQBuildLinkFolder(void) {
         @"/private/var/mobile/Containers/Shared/AppGroup"];
 
     NSArray *appIDs = WQMcmIdentifiers(WQMcmClassAppData, 700);
+    gMcmIDs = (NSInteger)appIDs.count;
     for (NSString *ident in appIDs) {
         NSString *path = WQMcmActivate(WQMcmClassAppData, ident, NO);
-        if (path.length > 0) [sources addObject:path];
+        if (path.length > 0) {
+            [sources addObject:path];
+            gMcmPaths++;
+        }
     }
     [sources addObject:@"/private/var/containers/Data/System"];
 
@@ -760,9 +766,11 @@ static void WQInstallFavorites(void) {
     if (docs.count > 0) {
         NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
         NSString *text = [NSString stringWithFormat:
-            @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n",
+            @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n"
+             "mcm identifiers %ld, activated %ld\n",
             gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-",
-            prefs != nil ? @"ok" : @"nil", (unsigned long)added];
+            prefs != nil ? @"ok" : @"nil", (unsigned long)added,
+            (long)gMcmIDs, (long)gMcmPaths];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
