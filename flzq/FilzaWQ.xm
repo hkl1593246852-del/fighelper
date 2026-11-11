@@ -792,10 +792,6 @@ static NSString *WQBuildLinkFolder(void) {
     for (NSString *container in gGrantedPaths) {
         if ([container rangeOfString:@"/Data/Application/"].location != NSNotFound) gDataPaths++;
         if ([container rangeOfString:@"/Bundle/Application/"].location != NSNotFound) gBundlePaths++;
-        NSDictionary *m = [NSDictionary dictionaryWithContentsOfFile:
-                           [container stringByAppendingPathComponent:
-                            @".com.apple.mobile_container_manager.metadata.plist"]];
-        if (m != nil) gMetaRead++;
     }
 
     // A readable manifest makes it easy to check what resolved to what.
@@ -872,6 +868,17 @@ static void WQGrantPerContainer(NSString *root) {
         NSInteger n = WQCountEntries(child, &err);
         if (n > 0) {
             gPerContainerOK++;
+
+            // The directory extension does not cover file reads, so ask for the
+            // metadata file itself and see whether that unlocks it.
+            NSString *metaFile = [child stringByAppendingPathComponent:
+                                  @".com.apple.mobile_container_manager.metadata.plist"];
+            if (WQFallbackQuery(metaFile, NO) < 0) {
+                WQFallbackQueryOwnGroup(metaFile, gGroup, NO);
+            }
+            NSDictionary *probe = [NSDictionary dictionaryWithContentsOfFile:metaFile];
+            if (probe != nil) gMetaRead++;
+
             if (gGrantedPaths == nil) gGrantedPaths = [NSMutableArray array];
             [gGrantedPaths addObject:child];
             if (gReadableRoot == nil) {
