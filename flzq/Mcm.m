@@ -109,8 +109,10 @@ NSString *WQMcmActivate(uint64_t containerClass, NSString *identifier, BOOL grou
     } else {
         gMcm.setIdentifiers(query, ident);
     }
+    // 0x900000000 is what the container manager expects when a lease will be
+    // activated afterwards; 0x100000000 is metadata-only and yields no token.
     if (gMcm.setFlags != NULL) {
-        gMcm.setFlags(query, 0x100000000ULL);
+        gMcm.setFlags(query, 0x900000000ULL);
     }
 
     void *object = gMcm.getSingle(query);
