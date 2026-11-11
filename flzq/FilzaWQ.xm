@@ -667,30 +667,35 @@ static void WQInstallFavorites(void) {
     NSDictionary *all = [defaults dictionaryRepresentation];
     NSMutableString *report = [NSMutableString string];
 
-    for (NSString *key in all) {
-        NSString *lower = key.lowercaseString;
-        BOOL looksLikeFavorites = ([lower containsString:@"bookmark"] ||
-                                   [lower containsString:@"favorite"] ||
-                                   [lower containsString:@"star"] ||
-                                   [lower containsString:@"collect"]);
-        if (!looksLikeFavorites) continue;
-
+    [report appendString:@"== defaults keys ==\n"];
+    NSArray *sortedKeys = [[all allKeys] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *key in sortedKeys) {
         id value = all[key];
-        [report appendFormat:@"found %@ = %@\n", key, [value description]];
-
-        if (![value isKindOfClass:[NSArray class]]) continue;
-
-        NSMutableArray *updated = [NSMutableArray arrayWithArray:value];
-        for (int i = 0; i < 2; i++) {
-            NSString *wanted = kFavoritePaths[i];
-            if (![updated containsObject:wanted]) {
-                [updated addObject:wanted];
-            }
-        }
-        [defaults setObject:updated forKey:key];
-        [report appendFormat:@"wrote %@ (%lu entries)\n", key, (unsigned long)updated.count];
+        NSString *desc = [value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSString class]]
+            ? [value description]
+            : [NSString stringWithFormat:@"<%@>", NSStringFromClass([value class])];
+        if (desc.length > 400) desc = [desc substringToIndex:400];
+        [report appendFormat:@"%@ = %@\n", key, desc];
     }
 
+    // Filza may store its sidebar in one of these; writing all of them is harmless
+    // and the log above tells us which one it actually reads.
+    NSArray *candidates = @[@"bookmarks", @"favorites", @"favoritePaths", @"starredPaths",
+                            @"savedPaths", @"collections", @"shortcuts", @"quickAccess"];
+    for (NSString *key in candidates) {
+        id existing = [defaults objectForKey:key];
+        NSMutableArray *list = [NSMutableArray array];
+        if ([existing isKindOfClass:[NSArray class]]) {
+            [list addObjectsFromArray:existing];
+        }
+        for (int i = 0; i < 2; i++) {
+            if (![list containsObject:kFavoritePaths[i]]) {
+                [list addObject:kFavoritePaths[i]];
+            }
+        }
+        [defaults setObject:list forKey:key];
+        [report appendFormat:@"wrote %@ (%lu)\n", key, (unsigned long)list.count];
+    }
     [defaults synchronize];
 
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
@@ -707,15 +712,24 @@ __attribute__((constructor))
 static void FilzaWQInit(void) {
     WQInstallAlertFilter();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+    // Grants must be in place before Filza paints its sidebar, otherwise the first
+    // listing of a favourite comes back empty and is never retried.
+    WQGrantAll();
+    WQInstallFavorites();
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
-        WQInstallFavorites();
-
-        // Filza re-checks itself when a screen loads; sweep whatever alert it
-        // manages to present.
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             WQSweepAlerts(WQTopController());
         }];
     });
+
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidBecomeActiveNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        WQGrantAll();
+    }];
 }
