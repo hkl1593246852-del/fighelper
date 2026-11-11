@@ -47,6 +47,8 @@ static NSInteger gMetaRead;
 static NSInteger gChildGrants;
 static NSInteger gChildFiles;
 
+static void WQGrantChildren(NSString *root, NSString *group, NSInteger limit);
+
 // ---------------------------------------------------------------------------
 // Entitlements and extensions
 // ---------------------------------------------------------------------------
