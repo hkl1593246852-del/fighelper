@@ -80,7 +80,7 @@ if [ "$MODE" = "rehost" ]; then
   echo "==> Moving the original lib7z aside"
   cp "$REHOST" "$WORK/lib7z_orig.dylib"
   $TOOL set-id "$WORK/lib7z_orig.dylib" \
-    "@rpath/lib7z.framework/lib7z" "@executable_path/Frameworks/lib7z_orig.dylib"
+    "@rpath/lib7z.framework/lib7z" "@rpath/lib7z_orig.dylib"
   cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
 fi
 
