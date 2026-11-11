@@ -745,16 +745,40 @@ static NSString *WQBuildLinkFolder(void) {
     }
     [sources addObject:@"/private/var/containers/Data/System"];
 
-    // Containers granted individually are not reachable through their parent, so they
-    // are linked directly.
+    // App bundles first: their Info.plist supplies the display name used below.
+    NSMutableDictionary<NSString *, NSString *> *names = [NSMutableDictionary dictionary];
     for (NSString *container in gGrantedPaths) {
+        if ([container rangeOfString:@"/Bundle/Application/"].location == NSNotFound) continue;
+        for (NSString *item in [fm contentsOfDirectoryAtPath:container error:nil]) {
+            if (![item hasSuffix:@".app"]) continue;
+            NSString *appPath = [container stringByAppendingPathComponent:item];
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                                  [appPath stringByAppendingPathComponent:@"Info.plist"]];
+            NSString *bid = info[@"CFBundleIdentifier"];
+            if (bid.length == 0) continue;
+            names[bid] = info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: bid;
+        }
+    }
+
+    // Then the data containers, named after the owning app.
+    for (NSString *container in gGrantedPaths) {
+        if ([container rangeOfString:@"/Data/Application/"].location == NSNotFound) continue;
+
         NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
                               [container stringByAppendingPathComponent:
                                @".com.apple.mobile_container_manager.metadata.plist"]];
-        NSString *ident = meta[@"MCMMetadataIdentifier"];
-        NSString *name = ident.length > 0 ? [ident lastPathComponent] : [container lastPathComponent];
-        if ([name containsString:@"/"] || name.length == 0) continue;
+        NSString *bid = meta[@"MCMMetadataIdentifier"];
+        if (bid.length == 0) bid = container.lastPathComponent;
+
+        NSString *name = names[bid] ?: bid;
+        name = [name stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+        if (name.length == 0) continue;
+
         NSString *link = [root stringByAppendingPathComponent:name];
+        if ([fm fileExistsAtPath:link]) {
+            link = [root stringByAppendingPathComponent:
+                    [NSString stringWithFormat:@"%@ (%@)", name, bid]];
+        }
         if ([fm fileExistsAtPath:link]) continue;
         [fm createSymbolicLinkAtPath:link withDestinationPath:container error:nil];
     }
