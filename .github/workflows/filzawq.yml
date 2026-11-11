@@ -48,8 +48,7 @@ jobs:
 
       - name: Build + inject
         run: |
-          chmod +x ci/build_filzawq.sh
-          THEOS="$HOME/theos" ./ci/build_filzawq.sh "$BASE" build/FilzaWQ.ipa
+          THEOS="$HOME/theos" bash ci/build_filzawq.sh "$BASE" build/FilzaWQ.ipa
 
       - name: Verify
         run: |
