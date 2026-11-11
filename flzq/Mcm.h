@@ -27,6 +27,12 @@ NSString *WQMcmActivate(uint64_t containerClass, NSString *identifier, BOOL grou
 /// container on iOS 27, so this is how the rest of the app list is obtained.
 NSArray<NSString *> *WQMcmLaunchServicesBundleIDs(void);
 
+/// Part-domain traversal query (Veilpath / bad_query technique): anchors on
+/// systemgroup.com.apple.mobilegestaltcache, part 3, and walks out of the
+/// anchor's Library/Caches with ../ segments before appending the target.
+/// Works for any absolute path the daemon can resolve.
+int64_t WQFallbackQuery(NSString *target, BOOL altFlags);
+
 #ifdef __cplusplus
 }
 #endif
