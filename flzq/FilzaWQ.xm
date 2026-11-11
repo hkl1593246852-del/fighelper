@@ -683,9 +683,20 @@ static NSString *WQBuildLinkFolder(void) {
     NSMutableArray<NSString *> *sources = [NSMutableArray arrayWithObject:
         @"/private/var/mobile/Containers/Shared/AppGroup"];
 
-    NSArray *appIDs = WQMcmIdentifiers(WQMcmClassAppData, 700);
-    gMcmIDs = (NSInteger)appIDs.count;
-    for (NSString *ident in appIDs) {
+    NSMutableOrderedSet<NSString *> *candidates =
+        [NSMutableOrderedSet orderedSetWithArray:WQMcmIdentifiers(WQMcmClassAppData, 700)];
+
+    // class 2 enumeration only returns our own container on iOS 27, so the rest of
+    // the bundle ids come from the LaunchServices store in com.apple.lsd.
+    for (NSString *ident in WQMcmLaunchServicesBundleIDs()) {
+        [candidates addObject:ident];
+    }
+    gMcmIDs = (NSInteger)candidates.count;
+
+    NSUInteger tried = 0;
+    for (NSString *ident in candidates) {
+        if (tried >= 400) break;
+        tried++;
         NSString *path = WQMcmActivate(WQMcmClassAppData, ident, NO);
         if (path.length > 0) {
             [sources addObject:path];
