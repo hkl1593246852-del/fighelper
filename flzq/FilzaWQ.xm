@@ -119,10 +119,6 @@ static void WQGrantAll(void) {
         for (int f = 0; f < 2 && best < 0; f++) {
             for (int p = 0; p < 4; p++) {
                 int64_t h = WQAccessKeep(kTargets[i], gGroup, flags[f], parts[p]);
-                if (h < 0) {
-                    // Part-domain traversal reaches paths the symlink trick cannot.
-                    h = WQFallbackQuery(kTargets[i], f == 1);
-                }
                 if (h >= 0) {
                     best = h;
                     combo = [NSString stringWithFormat:@"p%llu/%s",
@@ -138,6 +134,21 @@ static void WQGrantAll(void) {
 
         int perr = 0;
         NSInteger n = best >= 0 ? WQCountEntries(kTargets[i], &perr) : -1;
+
+        // A positive handle does not mean the path is readable: the symlink grant can
+        // land on a container the kernel still refuses. Probe, and when the listing
+        // is empty fall back to the part-domain traversal query.
+        if (n <= 0 && best != -255) {
+            for (int alt = 0; alt < 2 && n <= 0; alt++) {
+                int64_t h2 = WQFallbackQuery(kTargets[i], alt == 1);
+                if (h2 >= 0) {
+                    best = h2;
+                    perr = 0;
+                    n = WQCountEntries(kTargets[i], &perr);
+                }
+            }
+        }
+
         if (n > 0 && gReadableRoot == nil) {
             gReadableRoot = kTargets[i];
             gReadableCount = n;
