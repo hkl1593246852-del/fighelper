@@ -712,21 +712,18 @@ __attribute__((constructor))
 static void FilzaWQInit(void) {
     WQInstallAlertFilter();
 
-    // Granting inside the constructor runs before libxpc and the sandbox are ready
-    // and crashes. didFinishLaunchingNotification is early enough that Filza has
-    // not listed its sidebar yet, but late enough for the container queries.
-    [[NSNotificationCenter defaultCenter]
-        addObserverForName:UIApplicationDidFinishLaunchingNotification
-                    object:nil
-                     queue:[NSOperationQueue mainQueue]
-                usingBlock:^(NSNotification *note) {
+    // One second in is the point where libxpc and the sandbox are usable. Earlier
+    // than that - even inside didFinishLaunching - the container query path is not
+    // up yet and the process dies.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
         WQGrantAll();
         WQInstallFavorites();
 
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             WQSweepAlerts(WQTopController());
         }];
-    }];
+    });
 
     [[NSNotificationCenter defaultCenter]
         addObserverForName:UIApplicationDidBecomeActiveNotification
