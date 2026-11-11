@@ -26,7 +26,7 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang make perl zip unzip xz-utils
+          sudo apt-get install -y clang lld llvm make perl zip unzip xz-utils
           clang --version | head -n 2
           perl --version | head -n 2
 
