@@ -1,8 +1,11 @@
 name: filzawq
 
-# Builds the diagnostic dylib into a Filza base:
-#   filza/base-wq.ipa   Filza 4.0.0 with a FilzaApplySandboxExt slot (preferred)
-#   filza/Filza.ipa     stock Filza 5.0.1, handled through the lib7z slot
+# Builds on ubuntu-latest: Theos supports Linux, and Linux runner minutes are
+# billed 1x instead of the 10x macOS surcharge that ran the account out.
+#
+# Base IPA, first match wins:
+#   filza/Filza.ipa      stock Filza 5.0.1, loaded through the lib7z slot
+#   filza/base-wq.ipa    Filza 4.0.0 with a FilzaApplySandboxExt slot
 
 on:
   push:
@@ -10,15 +13,21 @@ on:
     paths:
       - 'flzq/**'
       - 'flz/**'
-      - 'ci/build_filzawq.sh'
+      - 'ci/**'
       - 'filza/**'
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang make perl zip unzip libtapi-dev xz-utils >/dev/null
+          clang --version | head -n 2
 
       - name: Pick a base IPA
         run: |
@@ -36,11 +45,6 @@ jobs:
           fi
           echo "base: $BASE"
 
-      - name: Toolchain
-        run: |
-          xcodebuild -version
-          brew install ldid xz 2>/dev/null || brew install ldid
-
       - name: Build + inject
         run: |
           chmod +x ci/build_filzawq.sh
@@ -49,7 +53,6 @@ jobs:
       - name: Verify
         run: |
           unzip -l build/FilzaWQ.ipa | head -n 20
-          unzip -l build/FilzaWQ.ipa | grep -E 'FilzaApplySandboxExt|lib7z_orig|\.app/Filza$' || true
           shasum -a 256 build/FilzaWQ.ipa | tee build/sha256.txt
 
       - uses: actions/upload-artifact@v4
