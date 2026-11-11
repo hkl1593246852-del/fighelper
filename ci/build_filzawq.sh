@@ -24,12 +24,16 @@ fi
 export THEOS
 
 SDKS_DIR="$THEOS/sdks"
-if [ ! -d "$SDKS_DIR" ] || [ -z "$(ls -A "$SDKS_DIR" 2>/dev/null)" ]; then
+have_sdk() {
+  [ -d "$SDKS_DIR" ] || return 1
+  find "$SDKS_DIR" -maxdepth 1 -name 'iPhoneOS*.sdk' -print -quit | grep -q .
+}
+
+if ! have_sdk; then
   echo "==> Fetching theos/sdks"
   rm -rf "$SDKS_DIR"
-  if ! git clone --depth 1 https://github.com/theos/sdks.git "$SDKS_DIR"; then
-    echo "clone failed" >&2
-  fi
+  git clone --depth 1 https://github.com/theos/sdks.git "$SDKS_DIR" \
+    || echo "clone failed" >&2
 fi
 
 echo "==> Available SDKs"
