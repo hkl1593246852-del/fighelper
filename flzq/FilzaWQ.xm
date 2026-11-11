@@ -795,7 +795,10 @@ static void WQGrantPerContainer(NSString *root) {
         tried++;
 
         int64_t h = WQFallbackQuery(child, NO);
+        if (h < 0) h = WQFallbackQueryOwnGroup(child, gGroup, NO);
         if (h < 0) h = WQFallbackQuery(child, YES);
+        if (h < 0) h = WQFallbackQueryOwnGroup(child, gGroup, YES);
+        if (h < 0) h = WQAccessKeep(child, gGroup, 0x0000008000000000ULL, 3);
         if (h < 0) continue;
 
         int err = 0;
