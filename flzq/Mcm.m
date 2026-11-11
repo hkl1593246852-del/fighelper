@@ -10,6 +10,10 @@
 #import <dlfcn.h>
 #import <xpc/xpc.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+
 typedef void *(*McmQueryCreate)(void);
 typedef void (*McmQuerySetU64)(void *, uint64_t);
 typedef void (*McmQuerySetXPC)(void *, xpc_object_t);
@@ -185,4 +189,87 @@ NSArray<NSString *> *WQMcmLaunchServicesBundleIDs(void) {
         }
     }
     return ids.array;
+}
+
+int64_t WQFallbackQuery(NSString *target, BOOL altFlags) {
+    if (target.length == 0 || ![target hasPrefix:@"/"]) return -255;
+
+    struct stat st;
+    if (lstat(target.fileSystemRepresentation, &st) != 0) return -255;
+
+    void *mgr = dlopen("/usr/lib/system/libsystem_containermanager.dylib",
+                       RTLD_NOW | RTLD_LOCAL);
+    if (mgr == NULL) return -1;
+
+    typedef void *(*Create)(void);
+    typedef void (*SetClass)(void *, uint64_t);
+    typedef void (*SetXPC)(void *, xpc_object_t);
+    typedef void (*SetU64)(void *, uint64_t);
+    typedef void (*SetCStr)(void *, const char *);
+    typedef void *(*GetSingle)(void *);
+    typedef void (*QFree)(void *);
+    typedef char *(*CopyToken)(void *);
+    typedef int64_t (*Consume)(const char *);
+
+    Create create = (Create)dlsym(mgr, "container_query_create");
+    SetClass setClass = (SetClass)dlsym(mgr, "container_query_set_class");
+    SetXPC setGroups = (SetXPC)dlsym(mgr, "container_query_set_group_identifiers");
+    SetU64 setFlags = (SetU64)dlsym(mgr, "container_query_operation_set_flags");
+    SetU64 setPart = (SetU64)dlsym(mgr, "container_query_operation_set_part");
+    SetCStr setDomain = (SetCStr)dlsym(mgr, "container_query_operation_set_part_domain");
+    GetSingle getSingle = (GetSingle)dlsym(mgr, "container_query_get_single_result");
+    QFree qFree = (QFree)dlsym(mgr, "container_query_free");
+    CopyToken copyToken = (CopyToken)dlsym(mgr, "container_copy_sandbox_token");
+    Consume consume = (Consume)dlsym(RTLD_DEFAULT, "sandbox_extension_consume");
+
+    if (create == NULL || setClass == NULL || setGroups == NULL || setFlags == NULL ||
+        setPart == NULL || setDomain == NULL || getSingle == NULL || qFree == NULL ||
+        copyToken == NULL || consume == NULL) {
+        dlclose(mgr);
+        return -1;
+    }
+
+    void *query = create();
+    if (query == NULL) {
+        dlclose(mgr);
+        return -2;
+    }
+
+    xpc_object_t identifier = xpc_string_create("systemgroup.com.apple.mobilegestaltcache");
+    setClass(query, 13);
+    setGroups(query, identifier);
+    setPart(query, 3);
+
+    // The anchor's Library/Caches sits eight levels below the data volume root.
+    char *part = NULL;
+    if (asprintf(&part, "../../../../../../../..%s", target.fileSystemRepresentation) == -1) {
+        qFree(query);
+        dlclose(mgr);
+        return -5;
+    }
+    setDomain(query, part);
+    setFlags(query, altFlags ? 0x0000000800000000ULL : 0x0000008000000000ULL);
+
+    void *result = getSingle(query);
+    if (result == NULL) {
+        free(part);
+        qFree(query);
+        dlclose(mgr);
+        return -3;
+    }
+
+    char *token = copyToken(result);
+    if (token == NULL) {
+        free(part);
+        qFree(query);
+        dlclose(mgr);
+        return -4;
+    }
+
+    int64_t handle = consume(token);
+    free(token);
+    free(part);
+    qFree(query);
+    dlclose(mgr);
+    return handle;
 }
