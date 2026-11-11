@@ -663,6 +663,43 @@ static NSString *const kFavoritePaths[2] = {
     @"/private/var/containers/Data/System",
 };
 
+/// Filza's App Manager enumerates through MobileContainerManager, which hides
+/// third-party apps since iOS 26. Instead of porting that, a folder of named
+/// symlinks is built inside Filza's own container: one link per reachable
+/// container, named after its MCMMetadataIdentifier.
+static NSString *WQBuildLinkFolder(void) {
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count == 0) return nil;
+
+    NSString *root = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"WQ Apps"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSArray *sources = @[
+        @"/private/var/mobile/Containers/Shared/AppGroup",
+        @"/private/var/mobile/Containers/Data/Application",
+        @"/private/var/containers/Data/System",
+    ];
+
+    for (NSString *source in sources) {
+        NSArray *children = [fm contentsOfDirectoryAtPath:source error:nil];
+        for (NSString *uuid in children) {
+            NSString *child = [source stringByAppendingPathComponent:uuid];
+            NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+                                  [child stringByAppendingPathComponent:
+                                   @".com.apple.mobile_container_manager.metadata.plist"]];
+            NSString *ident = meta[@"MCMMetadataIdentifier"];
+            NSString *name = ident.length > 0 ? ident : uuid;
+            if ([name containsString:@"/"]) continue;
+
+            NSString *link = [root stringByAppendingPathComponent:name];
+            if ([fm fileExistsAtPath:link]) continue;
+            [fm createSymbolicLinkAtPath:link withDestinationPath:child error:nil];
+        }
+    }
+    return root;
+}
+
 static void WQInstallFavorites(void) {
     Class prefsClass = NSClassFromString(@"TGPreferences");
     if (prefsClass == nil) return;
@@ -687,12 +724,17 @@ static void WQInstallFavorites(void) {
         if (path.length > 0) [known addObject:path];
     }
 
-    NSArray *wanted = @[
+    NSMutableArray *wanted = [NSMutableArray arrayWithArray:@[
         @{ @"name": @"WQ · App Groups",
            @"path": @"/private/var/mobile/Containers/Shared/AppGroup" },
         @{ @"name": @"WQ · System Data",
            @"path": @"/private/var/containers/Data/System" },
-    ];
+    ]];
+
+    NSString *links = WQBuildLinkFolder();
+    if (links.length > 0) {
+        [wanted addObject:@{ @"name": @"WQ · Apps", @"path": links }];
+    }
 
     SEL addSel = NSSelectorFromString(@"addItemToFavoritedLinks:");
     NSUInteger added = 0;
