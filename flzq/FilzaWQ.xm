@@ -18,6 +18,7 @@
 #import <sys/stat.h>
 
 #import "Wq.h"
+#import "Mcm.h"
 
 typedef struct __SecTask *WQSecTask;
 typedef WQSecTask (*WQCreateTask)(CFAllocatorRef);
@@ -675,11 +676,17 @@ static NSString *WQBuildLinkFolder(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:nil];
 
-    NSArray *sources = @[
-        @"/private/var/mobile/Containers/Shared/AppGroup",
-        @"/private/var/mobile/Containers/Data/Application",
-        @"/private/var/containers/Data/System",
-    ];
+    // App data containers are unreachable through the worse_query symlink trick on
+    // iOS 27; the MCM bridge activates each one directly instead.
+    NSMutableArray<NSString *> *sources = [NSMutableArray arrayWithObject:
+        @"/private/var/mobile/Containers/Shared/AppGroup"];
+
+    NSArray *appIDs = WQMcmIdentifiers(WQMcmClassAppData, 700);
+    for (NSString *ident in appIDs) {
+        NSString *path = WQMcmActivate(WQMcmClassAppData, ident, NO);
+        if (path.length > 0) [sources addObject:path];
+    }
+    [sources addObject:@"/private/var/containers/Data/System"];
 
     for (NSString *source in sources) {
         NSArray *children = [fm contentsOfDirectoryAtPath:source error:nil];
