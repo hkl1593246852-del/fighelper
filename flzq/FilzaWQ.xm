@@ -119,6 +119,10 @@ static void WQGrantAll(void) {
         for (int f = 0; f < 2 && best < 0; f++) {
             for (int p = 0; p < 4; p++) {
                 int64_t h = WQAccessKeep(kTargets[i], gGroup, flags[f], parts[p]);
+                if (h < 0) {
+                    // Part-domain traversal reaches paths the symlink trick cannot.
+                    h = WQFallbackQuery(kTargets[i], f == 1);
+                }
                 if (h >= 0) {
                     best = h;
                     combo = [NSString stringWithFormat:@"p%llu/%s",
