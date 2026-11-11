@@ -52,6 +52,8 @@ static NSInteger gMcmIDs;
 static NSInteger gMcmPaths;
 static NSString *gLinkRoot;
 static NSString *gSigningID;
+static NSInteger gPerContainerFound;
+static NSInteger gPerContainerOK;
 
 static void WQGrantChildren(NSString *root, NSString *group, NSInteger limit);
 
@@ -163,9 +165,9 @@ static void WQGrantAll(void) {
 
     gGranted = [summary componentsJoinedByString:@" "];
 
-    if (gReadableRoot != nil) {
-        WQGrantChildren(gReadableRoot, gGroup, 64);
-    }
+    // Root grants fail on iOS 27; walk the containers themselves instead.
+    WQGrantPerContainer(@"/private/var/mobile/Containers/Data/Application");
+    WQGrantPerContainer(@"/private/var/containers/Bundle/Application");
 
     int err = 0;
     gDataCount = WQCountEntries(kDataRoot, &err);
@@ -805,6 +807,34 @@ static NSString *WQSigningIdentifier(void) {
     return ident;
 }
 
+/// The root directories cannot be granted on iOS 27, but individual containers can.
+/// Children are discovered with fsgetpath (no directory read permission needed) and
+/// each one is granted on its own, which is what the reference integration does.
+static void WQGrantPerContainer(NSString *root) {
+    NSArray<NSString *> *children = WQList(root, 120000);
+    gPerContainerFound += (NSInteger)children.count;
+
+    NSInteger tried = 0;
+    for (NSString *child in children) {
+        if (tried >= 40) break;
+        tried++;
+
+        int64_t h = WQFallbackQuery(child, NO);
+        if (h < 0) h = WQFallbackQuery(child, YES);
+        if (h < 0) continue;
+
+        int err = 0;
+        NSInteger n = WQCountEntries(child, &err);
+        if (n > 0) {
+            gPerContainerOK++;
+            if (gReadableRoot == nil) {
+                gReadableRoot = child;
+                gReadableCount = n;
+            }
+        }
+    }
+}
+
 static void WQInstallFavorites(void) {
     Class prefsClass = NSClassFromString(@"TGPreferences");
     if (prefsClass == nil) return;
@@ -859,11 +889,13 @@ static void WQInstallFavorites(void) {
         NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
         NSString *text = [NSString stringWithFormat:
             @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n"
-             "mcm identifiers %ld, activated %ld\nlinks %@\nsigning %@\n",
+             "mcm identifiers %ld, activated %ld\n"
+             "per-container found %ld, granted %ld\nlinks %@\nsigning %@\n",
             gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-",
             prefs != nil ? @"ok" : @"nil", (unsigned long)added,
-            (long)gMcmIDs, (long)gMcmPaths, gLinkRoot ?: @"-",
-            gSigningID ?: WQSigningIdentifier()];
+            (long)gMcmIDs, (long)gMcmPaths,
+            (long)gPerContainerFound, (long)gPerContainerOK,
+            gLinkRoot ?: @"-", gSigningID ?: WQSigningIdentifier()];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
