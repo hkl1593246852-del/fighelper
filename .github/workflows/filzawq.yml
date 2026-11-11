@@ -31,10 +31,10 @@ jobs:
       - name: Pick a base IPA
         run: |
           mkdir -p filza
-          if [ -f filza/Filza.ipa ]; then
-            echo "BASE=filza/Filza.ipa" >> "$GITHUB_ENV"
-          elif [ -f filza/base-wq.ipa ]; then
+          if [ -f filza/base-wq.ipa ]; then
             echo "BASE=filza/base-wq.ipa" >> "$GITHUB_ENV"
+          elif [ -f filza/Filza.ipa ]; then
+            echo "BASE=filza/Filza.ipa" >> "$GITHUB_ENV"
           elif [ -n "${{ vars.FILZA_IPA_URL }}" ]; then
             curl -fL --retry 3 -o filza/base.ipa "${{ vars.FILZA_IPA_URL }}"
             echo "BASE=filza/base.ipa" >> "$GITHUB_ENV"
