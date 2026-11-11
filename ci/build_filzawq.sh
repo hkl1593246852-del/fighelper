@@ -21,14 +21,26 @@ echo "==> Theos at $THEOS"
 if [ ! -d "$THEOS" ]; then
   git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
 fi
-if [ ! -d "$THEOS/sdks" ] || [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
-  git clone --depth 1 https://github.com/theos/sdks "$THEOS/sdks"
-fi
 export THEOS
-find "$THEOS/sdks" -maxdepth 1 -name "*.sdk" -printf "%f\n" | sort | sed -n "1,5p"
 
-SDK_NAME="$(find "$THEOS/sdks" -maxdepth 1 -name 'iPhoneOS*.sdk' -printf "%f\n" | sort -V | tail -n 1 | sed 's/\.sdk$//')"
-[ -n "$SDK_NAME" ] || { echo "no iPhoneOS sdk in theos/sdks"; exit 1; }
+SDKS_DIR="$THEOS/sdks"
+if [ ! -d "$SDKS_DIR" ] || [ -z "$(ls -A "$SDKS_DIR" 2>/dev/null)" ]; then
+  echo "==> Fetching theos/sdks"
+  rm -rf "$SDKS_DIR"
+  if ! git clone --depth 1 https://github.com/theos/sdks.git "$SDKS_DIR"; then
+    echo "clone failed" >&2
+  fi
+fi
+
+echo "==> Available SDKs"
+ls -la "$SDKS_DIR" | sed -n '1,15p'
+
+SDK_PATH="$(find "$SDKS_DIR" -maxdepth 1 -name 'iPhoneOS*.sdk' | sort -V | tail -n 1)"
+if [ -z "$SDK_PATH" ]; then
+  echo "no iPhoneOS sdk found under $SDKS_DIR" >&2
+  exit 1
+fi
+SDK_NAME="$(basename "$SDK_PATH" .sdk)"
 SDK_VER="${SDK_NAME#iPhoneOS}"
 echo "    using $SDK_NAME"
 
@@ -38,7 +50,7 @@ trap 'rm -rf "$WORK"' EXIT
 echo "==> Unpacking base IPA"
 mkdir -p "$WORK/ipa"
 unzip -q "$IPA" -d "$WORK/ipa"
-APP="$(find "$WORK/ipa/Payload" -maxdepth 1 -name '*.app' -type d | head -n 1)"
+APP="$(find "$WORK/ipa/Payload" -maxdepth 1 -name '*.app' -type d | sed -n '1p')"
 [ -n "$APP" ] || { echo "no .app in Payload"; exit 1; }
 EXEC_NAME="$($TOOL executable "$APP/Info.plist")"
 BIN="$APP/$EXEC_NAME"
@@ -98,7 +110,7 @@ if ! ( cd "$WORK/proj" && { make clean >/dev/null 2>&1 || true; }; make FINALPAC
   echo "==> build failed"
   exit 1
 fi
-DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | head -n 1)"
+DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | sed -n '1p')"
 [ -n "$DYLIB" ] || { echo "dylib not produced"; exit 1; }
 echo "    $DYLIB ($(stat -c%s "$DYLIB") bytes)"
 
