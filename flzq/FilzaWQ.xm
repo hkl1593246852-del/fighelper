@@ -456,7 +456,7 @@ static NSArray<WQApp *> *WQCollectApps(void) {
         __strong typeof(weakSelf) self = weakSelf;
         if (self == nil) return nil;
         UIAction *ren = [UIAction actionWithTitle:@"重命名" image:nil identifier:nil
-                                          handler:^(UIAction *a) { [self rename:ip]; }];
+                                          handler:^(UIAction *a) { [self wqRename:ip]; }];
         UIAction *cp = [UIAction actionWithTitle:@"复制路径" image:nil identifier:nil
                                          handler:^(UIAction *a) {
             [UIPasteboard generalPasteboard].string = full;
@@ -465,7 +465,7 @@ static NSArray<WQApp *> *WQCollectApps(void) {
     }];
 }
 
-- (void)rename:(NSIndexPath *)ip {
+- (void)wqRename:(NSIndexPath *)ip {
     NSString *name = self.names[ip.row];
     NSString *full = [self.path stringByAppendingPathComponent:name];
 
