@@ -25,9 +25,10 @@ jobs:
 
       - name: Toolchain
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang make perl zip unzip libtapi-dev xz-utils >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y clang make perl zip unzip xz-utils
           clang --version | head -n 2
+          perl --version | head -n 2
 
       - name: Pick a base IPA
         run: |
