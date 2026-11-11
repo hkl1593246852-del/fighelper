@@ -23,6 +23,25 @@ if [ ! -d "$THEOS" ]; then
 fi
 export THEOS
 
+# Theos looks for its Linux cross toolchain under $THEOS/toolchain/linux/iphone.
+# The host clang plus LLVM's Mach-O linker (ld64.lld) are enough to build a dylib.
+TC="$THEOS/toolchain/linux/iphone/bin"
+mkdir -p "$TC"
+link_if_present() {
+  src="$(command -v "$1" 2>/dev/null || true)"
+  [ -n "$src" ] && ln -sf "$src" "$TC/$2"
+}
+link_if_present clang clang
+link_if_present clang++ clang++
+link_if_present ld64.lld ld
+link_if_present lld ld
+link_if_present llvm-ar ar
+link_if_present llvm-ranlib ranlib
+link_if_present llvm-strip strip
+link_if_present llvm-nm nm
+link_if_present llvm-objcopy objcopy
+echo "    toolchain shims:"; ls -l "$TC" | sed -n '2,12p'
+
 SDKS_DIR="$THEOS/sdks"
 have_sdk() {
   [ -d "$SDKS_DIR" ] || return 1
