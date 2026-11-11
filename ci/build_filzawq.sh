@@ -1,10 +1,9 @@
 #!/bin/bash
 # Build the diagnostic dylib into a Filza base and repackage an unsigned IPA.
-# Runs on Linux: no Xcode, no codesign, no install_name_tool.
+# macOS runner: Xcode toolchain and Theos, no shims.
 #
-# Two base layouts are supported:
 #   slot   - the base already links Frameworks/FilzaApplySandboxExt.dylib
-#   rehost - a stock Filza linking @rpath/lib7z.framework/lib7z; our dylib takes
+#   rehost - a stock Filza linking @rpath/lib7z.framework/lib7z; the dylib takes
 #            that path and re-exports the real library, so the main binary keeps
 #            its load commands and Filza.signature still validates
 #
@@ -15,7 +14,6 @@ IPA="${1:?usage: build_filzawq.sh <base.ipa> [out.ipa]}"
 OUT="${2:-build/FilzaWQ.ipa}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 THEOS="${THEOS:-$HOME/theos}"
-TOOL="python3 $ROOT/ci/macho_tool.py"
 
 echo "==> Theos at $THEOS"
 if [ ! -d "$THEOS" ]; then
@@ -23,49 +21,15 @@ if [ ! -d "$THEOS" ]; then
 fi
 export THEOS
 
-# Theos looks for its Linux cross toolchain under $THEOS/toolchain/linux/iphone.
-# The host clang plus LLVM's Mach-O linker (ld64.lld) are enough to build a dylib.
-TC="$THEOS/toolchain/linux/iphone/bin"
-mkdir -p "$TC"
-link_if_present() {
-  src="$(command -v "$1" 2>/dev/null || true)"
-  [ -n "$src" ] && ln -sf "$src" "$TC/$2"
-}
-link_if_present clang clang
-link_if_present clang++ clang++
-link_if_present ld64.lld ld
-link_if_present lld ld
-link_if_present llvm-ar ar
-link_if_present llvm-ranlib ranlib
-link_if_present llvm-strip strip
-link_if_present llvm-nm nm
-link_if_present llvm-objcopy objcopy
-echo "    toolchain shims:"; ls -l "$TC" | sed -n '2,12p'
-
-SDKS_DIR="$THEOS/sdks"
-have_sdk() {
-  [ -d "$SDKS_DIR" ] || return 1
-  find "$SDKS_DIR" -maxdepth 1 -name 'iPhoneOS*.sdk' -print -quit | grep -q .
-}
-
-if ! have_sdk; then
-  echo "==> Fetching theos/sdks"
-  rm -rf "$SDKS_DIR"
-  git clone --depth 1 https://github.com/theos/sdks.git "$SDKS_DIR" \
-    || echo "clone failed" >&2
+if SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)" && [ -d "$SYSROOT" ]; then
+  export SYSROOT
+  echo "    SYSROOT=$SYSROOT"
+else
+  echo "==> No Xcode SDK; falling back to theos/sdks"
+  if [ ! -d "$THEOS/sdks" ] || [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
+    git clone --depth 1 https://github.com/theos/sdks "$THEOS/sdks"
+  fi
 fi
-
-echo "==> Available SDKs"
-ls -la "$SDKS_DIR" | sed -n '1,15p'
-
-SDK_PATH="$(find "$SDKS_DIR" -maxdepth 1 -name 'iPhoneOS*.sdk' | sort -V | tail -n 1)"
-if [ -z "$SDK_PATH" ]; then
-  echo "no iPhoneOS sdk found under $SDKS_DIR" >&2
-  exit 1
-fi
-SDK_NAME="$(basename "$SDK_PATH" .sdk)"
-SDK_VER="${SDK_NAME#iPhoneOS}"
-echo "    using $SDK_NAME"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -75,7 +39,7 @@ mkdir -p "$WORK/ipa"
 unzip -q "$IPA" -d "$WORK/ipa"
 APP="$(find "$WORK/ipa/Payload" -maxdepth 1 -name '*.app' -type d | sed -n '1p')"
 [ -n "$APP" ] || { echo "no .app in Payload"; exit 1; }
-EXEC_NAME="$($TOOL executable "$APP/Info.plist")"
+EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
 BIN="$APP/$EXEC_NAME"
 [ -f "$BIN" ] || { echo "binary $BIN missing"; exit 1; }
 echo "    app=$APP"
@@ -98,8 +62,7 @@ echo "==> Mode: $MODE"
 if [ "$MODE" = "rehost" ]; then
   echo "==> Moving the original lib7z aside"
   cp "$REHOST" "$WORK/lib7z_orig.dylib"
-  $TOOL set-id "$WORK/lib7z_orig.dylib" \
-    "@rpath/lib7z.framework/lib7z" "@rpath/lib7z_orig.dylib"
+  install_name_tool -id "@rpath/lib7z_orig.dylib" "$WORK/lib7z_orig.dylib"
   cp "$WORK/lib7z_orig.dylib" "$APP/Frameworks/lib7z_orig.dylib"
 fi
 
@@ -114,7 +77,7 @@ REEXPORT=""
 
 cat > "$WORK/proj/Makefile" <<MK
 ARCHS = arm64
-TARGET = iphone:clang:$SDK_VER:15.0
+TARGET = iphone:clang:latest:15.0
 INSTALL_TARGET_PROCESSES = Filza
 
 include \$(THEOS)/makefiles/common.mk
@@ -130,12 +93,11 @@ MK
 
 echo "==> Building dylib"
 if ! ( cd "$WORK/proj" && { make clean >/dev/null 2>&1 || true; }; make FINALPACKAGE=1 ); then
-  echo "==> build failed"
-  exit 1
+  echo "==> build failed"; exit 1
 fi
 DYLIB="$(find "$WORK/proj/.theos" -name 'FilzaWQ.dylib' | sed -n '1p')"
 [ -n "$DYLIB" ] || { echo "dylib not produced"; exit 1; }
-echo "    $DYLIB ($(stat -c%s "$DYLIB") bytes)"
+echo "    $DYLIB ($(stat -f%z "$DYLIB") bytes)"
 
 echo "==> Undefined symbols"
 nm -u "$DYLIB" | sed 's/^/    /' || true
@@ -148,21 +110,31 @@ echo "==> Installing dylib"
 if [ "$MODE" = "slot" ]; then
   cp "$DYLIB" "$SLOT"
   echo "==> Disabling the self-check lookup"
-  $TOOL rename "$BIN" SecStaticCodeCheckValidity SecStaticCodeCheckValiditq
-  $TOOL rename "$BIN" SecStaticCodeCheckValidityWithErrors SecStaticCodeCheckValiditqWithErrors
+  python3 - "$BIN" <<'PY'
+import sys
+path = sys.argv[1]
+data = bytearray(open(path, "rb").read())
+for old, new in ((b"SecStaticCodeCheckValidity", b"SecStaticCodeCheckValiditq"),
+                 (b"SecStaticCodeCheckValidityWithErrors", b"SecStaticCodeCheckValiditqWithErrors")):
+    n = data.count(old)
+    if n:
+        data = data.replace(old, new)
+        print(f"  renamed {old.decode()} x{n}")
+open(path, "wb").write(data)
+PY
 else
   cp "$DYLIB" "$REHOST"
 fi
 
 echo "==> Stripping signatures"
-$TOOL strip-signature "$BIN" || true
-[ -f "$SLOT" ] && $TOOL strip-signature "$SLOT" || true
-[ -f "$REHOST" ] && $TOOL strip-signature "$REHOST" || true
-[ -f "$APP/Frameworks/lib7z_orig.dylib" ] && $TOOL strip-signature "$APP/Frameworks/lib7z_orig.dylib" || true
+codesign --remove-signature "$BIN" 2>/dev/null || true
+[ -f "$SLOT" ] && codesign --remove-signature "$SLOT" 2>/dev/null || true
+[ -f "$REHOST" ] && codesign --remove-signature "$REHOST" 2>/dev/null || true
+[ -f "$APP/Frameworks/lib7z_orig.dylib" ] && codesign --remove-signature "$APP/Frameworks/lib7z_orig.dylib" 2>/dev/null || true
 for fw in "$APP"/Frameworks/*.framework; do
   [ -d "$fw" ] || continue
   name="$(basename "$fw" .framework)"
-  [ -f "$fw/$name" ] && $TOOL strip-signature "$fw/$name" || true
+  [ -f "$fw/$name" ] && codesign --remove-signature "$fw/$name" 2>/dev/null || true
 done
 rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision"
 
@@ -170,5 +142,5 @@ echo "==> Packaging"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 ( cd "$WORK/ipa" && zip -qry "$ROOT/$OUT" Payload )
-echo "==> Done: $OUT ($(stat -c%s "$ROOT/$OUT") bytes)"
-sha256sum "$ROOT/$OUT"
+echo "==> Done: $OUT ($(stat -f%z "$ROOT/$OUT") bytes)"
+shasum -a 256 "$ROOT/$OUT"
