@@ -134,3 +134,53 @@ NSString *WQMcmActivate(uint64_t containerClass, NSString *identifier, BOOL grou
 
     return path.length > 0 ? path : nil;
 }
+
+NSArray<NSString *> *WQMcmLaunchServicesBundleIDs(void) {
+    NSString *lsd = WQMcmActivate(WQMcmClassSystemGroup, @"com.apple.lsd", NO);
+    if (lsd.length == 0) return @[];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *stores = [NSMutableArray array];
+    for (NSString *sub in @[@"Library/Caches", @"Library", @""]) {
+        NSString *dir = sub.length > 0 ? [lsd stringByAppendingPathComponent:sub] : lsd;
+        for (NSString *name in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+            if ([name hasPrefix:@"com.apple.LaunchServices-"]) {
+                [stores addObject:[dir stringByAppendingPathComponent:name]];
+            }
+        }
+    }
+
+    NSMutableOrderedSet<NSString *> *ids = [NSMutableOrderedSet orderedSet];
+    for (NSString *file in stores) {
+        NSData *data = [NSData dataWithContentsOfFile:file];
+        if (data.length == 0) continue;
+
+        const uint8_t *bytes = data.bytes;
+        NSUInteger len = data.length;
+        NSUInteger i = 0;
+        while (i + 4 < len) {
+            if (bytes[i] != 'c' || bytes[i + 1] != 'o' || bytes[i + 2] != 'm' || bytes[i + 3] != '.') {
+                i++;
+                continue;
+            }
+            NSUInteger start = i;
+            NSUInteger j = i;
+            while (j < len && j - start < 96) {
+                uint8_t c = bytes[j];
+                BOOL valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+                if (!valid) break;
+                j++;
+            }
+            if (j - start >= 8) {
+                NSString *candidate = [[NSString alloc] initWithBytes:bytes + start
+                                                               length:j - start
+                                                             encoding:NSUTF8StringEncoding];
+                if (candidate.length > 0) [ids addObject:candidate];
+            }
+            i = j > i ? j : i + 1;
+            if (ids.count > 900) return ids.array;
+        }
+    }
+    return ids.array;
+}
