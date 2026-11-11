@@ -671,6 +671,51 @@ static NSString *const kFavoritePaths[2] = {
 /// third-party apps since iOS 26. Instead of porting that, a folder of named
 /// symlinks is built inside Filza's own container: one link per reachable
 /// container, named after its MCMMetadataIdentifier.
+/// A bundle identifier looks like com.example.app: at least two dots and only
+/// identifier characters.
+static BOOL WQLooksLikeBundleID(NSString *value) {
+    if (value.length < 6 || [value rangeOfString:@"."].location == NSNotFound) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+                               @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"];
+    if ([value rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return NO;
+    return [[value componentsSeparatedByString:@"."] count] >= 2;
+}
+
+/// The metadata plist is protected, but the container's own directory names carry the
+/// bundle id: Library/Preferences holds com.example.app.plist, caches hold similar
+/// folders. Directory listing works with the extension we already hold.
+static NSString *WQInferBundleID(NSString *container) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *subdirs = @[@"Library/Preferences", @"Library/Caches",
+                         @"Library/Application Support", @"Library/SplashBoard",
+                         @"Documents", @"Library"];
+    for (NSString *sub in subdirs) {
+        NSString *dir = [container stringByAppendingPathComponent:sub];
+        for (NSString *name in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+            NSString *stem = [name stringByDeletingPathExtension];
+            if (WQLooksLikeBundleID(stem)) return stem;
+            if (WQLooksLikeBundleID(name)) return name;
+        }
+    }
+    return nil;
+}
+
+/// LaunchServices is reachable in-process and knows the display name for a bundle id.
+static NSString *WQDisplayNameForBundleID(NSString *bundleID) {
+    if (bundleID.length == 0) return nil;
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    SEL proxySel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+    if (proxyClass == Nil || ![proxyClass respondsToSelector:proxySel]) return nil;
+
+    id proxy = ((id (*)(id, SEL, id))objc_msgSend)(proxyClass, proxySel, bundleID);
+    if (proxy == nil) return nil;
+
+    SEL nameSel = NSSelectorFromString(@"localizedName");
+    if (![proxy respondsToSelector:nameSel]) return nil;
+    id value = ((id (*)(id, SEL))objc_msgSend)(proxy, nameSel);
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
 static NSString *WQBuildLinkFolder(void) {
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (docs.count == 0) return nil;
@@ -772,9 +817,10 @@ static NSString *WQBuildLinkFolder(void) {
                               [container stringByAppendingPathComponent:
                                @".com.apple.mobile_container_manager.metadata.plist"]];
         NSString *bid = meta[@"MCMMetadataIdentifier"];
+        if (!WQLooksLikeBundleID(bid)) bid = WQInferBundleID(container);
         if (bid.length == 0) bid = container.lastPathComponent;
 
-        NSString *name = names[bid] ?: bid;
+        NSString *name = names[bid] ?: WQDisplayNameForBundleID(bid) ?: bid;
         name = [name stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
         if (name.length == 0) continue;
 
