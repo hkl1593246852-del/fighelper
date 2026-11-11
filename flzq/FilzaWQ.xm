@@ -60,7 +60,7 @@ static NSInteger gTotalLinks;
 static NSInteger gDataPaths;
 static NSInteger gBundlePaths;
 
-static void WQGrantPerContainer(NSString *root);
+static void WQGrantPerContainer(NSString *root, unsigned long long maxInode);
 
 // ---------------------------------------------------------------------------
 // Entitlements and extensions
@@ -171,8 +171,8 @@ static void WQGrantAll(void) {
     gGranted = [summary componentsJoinedByString:@" "];
 
     // Root grants fail on iOS 27; walk the containers themselves instead.
-    WQGrantPerContainer(@"/private/var/mobile/Containers/Data/Application");
-    WQGrantPerContainer(@"/private/var/containers/Bundle/Application");
+    WQGrantPerContainer(@"/private/var/mobile/Containers/Data/Application", 400000ULL);
+    WQGrantPerContainer(@"/private/var/containers/Bundle/Application", 1500000ULL);
 
     int err = 0;
     gDataCount = WQCountEntries(kDataRoot, &err);
@@ -848,8 +848,8 @@ static NSString *WQSigningIdentifier(void) {
 /// The root directories cannot be granted on iOS 27, but individual containers can.
 /// Children are discovered with fsgetpath (no directory read permission needed) and
 /// each one is granted on its own, which is what the reference integration does.
-static void WQGrantPerContainer(NSString *root) {
-    NSArray<NSString *> *children = WQList(root, 120000);
+static void WQGrantPerContainer(NSString *root, unsigned long long maxInode) {
+    NSArray<NSString *> *children = WQList(root, maxInode);
     gPerContainerFound += (NSInteger)children.count;
 
     NSInteger tried = 0;
