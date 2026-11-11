@@ -138,9 +138,11 @@ static void WQGrantAll(void) {
         // A positive handle does not mean the path is readable: the symlink grant can
         // land on a container the kernel still refuses. Probe, and when the listing
         // is empty fall back to the part-domain traversal query.
+        NSString *fbNote = @"";
         if (n <= 0 && best != -255) {
             for (int alt = 0; alt < 2 && n <= 0; alt++) {
                 int64_t h2 = WQFallbackQuery(kTargets[i], alt == 1);
+                fbNote = [fbNote stringByAppendingFormat:@" fb%d=%lld", alt, h2];
                 if (h2 >= 0) {
                     best = h2;
                     perr = 0;
@@ -153,10 +155,10 @@ static void WQGrantAll(void) {
             gReadableRoot = kTargets[i];
             gReadableCount = n;
         }
-        [summary addObject:[NSString stringWithFormat:@"%@=%@/%ld",
+        [summary addObject:[NSString stringWithFormat:@"%@=%@/%ld%@",
                             combo,
                             best >= 0 ? [NSString stringWithFormat:@"%lld", best] : @"",
-                            (long)n]];
+                            (long)n, fbNote]];
     }
 
     gGranted = [summary componentsJoinedByString:@" "];
