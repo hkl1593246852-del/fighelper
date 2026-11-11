@@ -51,6 +51,7 @@ static NSInteger gChildFiles;
 static NSInteger gMcmIDs;
 static NSInteger gMcmPaths;
 static NSString *gLinkRoot;
+static NSString *gSigningID;
 
 static void WQGrantChildren(NSString *root, NSString *group, NSInteger limit);
 
@@ -731,6 +732,25 @@ static NSString *WQBuildLinkFolder(void) {
     return root;
 }
 
+/// The code-signing identifier as the kernel sees it. The container manager only
+/// hands out app data containers when this equals com.apple.mobile.MobileHouseArrest.
+static NSString *WQSigningIdentifier(void) {
+    typedef struct __SecTask *WQTask;
+    typedef WQTask (*CreateFn)(CFAllocatorRef);
+    typedef CFTypeRef (*CopyFn)(WQTask);
+    CreateFn create = (CreateFn)dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf");
+    CopyFn copyId = (CopyFn)dlsym(RTLD_DEFAULT, "SecTaskCopySigningIdentifier");
+    if (create == NULL || copyId == NULL) return @"?";
+    WQTask task = create(kCFAllocatorDefault);
+    if (task == NULL) return @"?";
+    CFTypeRef value = copyId(task);
+    CFRelease(task);
+    if (value == NULL) return @"?";
+    NSString *ident = [NSString stringWithString:(__bridge NSString *)value];
+    CFRelease(value);
+    return ident;
+}
+
 static void WQInstallFavorites(void) {
     Class prefsClass = NSClassFromString(@"TGPreferences");
     if (prefsClass == nil) return;
@@ -785,10 +805,11 @@ static void WQInstallFavorites(void) {
         NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
         NSString *text = [NSString stringWithFormat:
             @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n"
-             "mcm identifiers %ld, activated %ld\nlinks %@\n",
+             "mcm identifiers %ld, activated %ld\nlinks %@\nsigning %@\n",
             gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-",
             prefs != nil ? @"ok" : @"nil", (unsigned long)added,
-            (long)gMcmIDs, (long)gMcmPaths, gLinkRoot ?: @"-"];
+            (long)gMcmIDs, (long)gMcmPaths, gLinkRoot ?: @"-",
+            gSigningID ?: WQSigningIdentifier()];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
