@@ -33,6 +33,10 @@ NSArray<NSString *> *WQMcmLaunchServicesBundleIDs(void);
 /// Works for any absolute path the daemon can resolve.
 int64_t WQFallbackQuery(NSString *target, BOOL altFlags);
 
+/// Same traversal, but anchored on the caller's own app group (class 7) instead
+/// of the mobilegestaltcache system group (class 13).
+int64_t WQFallbackQueryOwnGroup(NSString *target, NSString *group, BOOL altFlags);
+
 #ifdef __cplusplus
 }
 #endif
