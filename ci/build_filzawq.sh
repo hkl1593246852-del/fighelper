@@ -25,9 +25,9 @@ if [ ! -d "$THEOS/sdks" ] || [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
   git clone --depth 1 https://github.com/theos/sdks "$THEOS/sdks"
 fi
 export THEOS
-ls "$THEOS/sdks" | head -n 5
+find "$THEOS/sdks" -maxdepth 1 -name "*.sdk" -printf "%f\n" | sort | sed -n "1,5p"
 
-SDK_NAME="$(ls "$THEOS/sdks" | grep -E '^iPhoneOS[0-9.]+\.sdk$' | sort -V | tail -n 1 | sed 's/\.sdk$//')"
+SDK_NAME="$(find "$THEOS/sdks" -maxdepth 1 -name 'iPhoneOS*.sdk' -printf "%f\n" | sort -V | tail -n 1 | sed 's/\.sdk$//')"
 [ -n "$SDK_NAME" ] || { echo "no iPhoneOS sdk in theos/sdks"; exit 1; }
 SDK_VER="${SDK_NAME#iPhoneOS}"
 echo "    using $SDK_NAME"
