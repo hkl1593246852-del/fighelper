@@ -44,6 +44,8 @@ static NSInteger gBundleCount;
 static NSString *gReadableRoot;
 static NSInteger gReadableCount;
 static NSInteger gMetaRead;
+static NSInteger gChildGrants;
+static NSInteger gChildFiles;
 
 // ---------------------------------------------------------------------------
 // Entitlements and extensions
@@ -136,6 +138,10 @@ static void WQGrantAll(void) {
 
     gGranted = [summary componentsJoinedByString:@" "];
 
+    if (gReadableRoot != nil) {
+        WQGrantChildren(gReadableRoot, gGroup, 64);
+    }
+
     int err = 0;
     gDataCount = WQCountEntries(kDataRoot, &err);
     gBaseline = [NSString stringWithFormat:@"%ld (errno %d)", (long)gDataCount, err];
@@ -186,6 +192,39 @@ static void WQInstallAlertFilter(void) {
         WQOrigPresent = (void (*)(id, SEL, UIViewController *, BOOL, void (^)(void)))
             method_getImplementation(m);
         method_setImplementation(m, (IMP)WQPresent);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-child grants
+//
+// A grant on the parent only covers that single level: files inside the child
+// containers stay unreadable, which is why the folders looked empty. Each child
+// gets its own extension so Filza's own browser can descend into it.
+// ---------------------------------------------------------------------------
+
+static void WQGrantChildren(NSString *root, NSString *group, NSInteger limit) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *children = [fm contentsOfDirectoryAtPath:root error:nil];
+    NSInteger done = 0;
+
+    for (NSString *name in children) {
+        if (done >= limit) break;
+        NSString *child = [root stringByAppendingPathComponent:name];
+
+        int64_t h = WQAccessKeep(child, group, 0x0000008000000000ULL, 3);
+        if (h < 0) {
+            h = WQAccessKeep(child, group, 0x0000000800000000ULL, 3);
+        }
+        if (h < 0) continue;
+
+        done++;
+        gChildGrants++;
+
+        NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+                              [child stringByAppendingPathComponent:
+                               @".com.apple.mobile_container_manager.metadata.plist"]];
+        if (meta != nil) gChildFiles++;
     }
 }
 
@@ -310,8 +349,9 @@ static NSArray<WQApp *> *WQCollectApps(void) {
         label.numberOfLines = 0;
         label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
         label.text = [NSString stringWithFormat:
-                      @"group %@\nroot %@ (%ld, meta %ld)\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
+                      @"group %@\nroot %@ (%ld, meta %ld)\nchildren %ld/%ld\nbaseline %@\nbundles %ld  containers %ld\nhandles %@",
                       gGroup, gReadableRoot ?: @"-", (long)gReadableCount, (long)gMetaRead,
+                      (long)gChildGrants, (long)gChildFiles,
                       gBaseline, (long)gBundleCount, (long)gDataCount, gGranted];
         label;
     });
