@@ -407,6 +407,85 @@ static NSArray<WQApp *> *WQCollectApps(void) {
     return cell;
 }
 
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)t
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)ip {
+    NSString *name = self.names[ip.row];
+    NSString *full = [self.path stringByAppendingPathComponent:name];
+
+    UIContextualAction *del = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleDestructive
+                            title:@"删除"
+                          handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        NSError *err = nil;
+        BOOL ok = [[NSFileManager defaultManager] removeItemAtPath:full error:&err];
+        if (!ok) {
+            UIAlertController *e =
+                [UIAlertController alertControllerWithTitle:@"删除失败"
+                                                    message:err.localizedDescription
+                                             preferredStyle:UIAlertControllerStyleAlert];
+            [e addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+            [self presentViewController:e animated:YES completion:nil];
+        }
+        self.names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:self.path error:nil];
+        [t reloadData];
+        done(ok);
+    }];
+
+    UIContextualAction *cpy = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleNormal
+                            title:@"复制路径"
+                          handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        [UIPasteboard generalPasteboard].string = full;
+        done(YES);
+    }];
+
+    return [UISwipeActionsConfiguration configurationWithActions:@[del, cpy]];
+}
+
+- (UIContextMenuConfiguration *)tableView:(UITableView *)t
+    contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)ip
+                                        point:(CGPoint)point {
+    NSString *full = [self.path stringByAppendingPathComponent:self.names[ip.row]];
+    __weak typeof(self) weakSelf = self;
+    return [UIContextMenuConfiguration
+        configurationWithIdentifier:nil
+                    previewProvider:nil
+                     actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggested) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (self == nil) return nil;
+        UIAction *ren = [UIAction actionWithTitle:@"重命名" image:nil identifier:nil
+                                          handler:^(UIAction *a) { [self rename:ip]; }];
+        UIAction *cp = [UIAction actionWithTitle:@"复制路径" image:nil identifier:nil
+                                         handler:^(UIAction *a) {
+            [UIPasteboard generalPasteboard].string = full;
+        }];
+        return [UIMenu menuWithTitle:@"" children:@[ren, cp]];
+    }];
+}
+
+- (void)rename:(NSIndexPath *)ip {
+    NSString *name = self.names[ip.row];
+    NSString *full = [self.path stringByAppendingPathComponent:name];
+
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"重命名"
+                                                              message:full
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *field) { field.text = name; }];
+    [a addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        NSString *to = a.textFields.firstObject.text;
+        if (to.length == 0) return;
+        NSString *dest = [self.path stringByAppendingPathComponent:to];
+        [[NSFileManager defaultManager] moveItemAtPath:full toPath:dest error:nil];
+        self.names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:self.path error:nil];
+        [self.tableView reloadData];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [t deselectRowAtIndexPath:ip animated:YES];
     NSString *name = self.names[ip.row];
