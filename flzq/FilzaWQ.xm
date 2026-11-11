@@ -649,52 +649,58 @@ static UIViewController *WQTopController(void) {
 }
 
 
-static UIButton *gFab;
-static id gFabTarget;
+// ---------------------------------------------------------------------------
+// Favorites
+//
+// Filza keeps its sidebar entries in NSUserDefaults inside its own container, so
+// the two reachable roots can simply be appended there and show up in Filza's own
+// UI, with no extra panel of ours.
+// ---------------------------------------------------------------------------
 
-@interface WQFabTarget : NSObject
-@end
+static NSString *const kFavoritePaths[2] = {
+    @"/private/var/mobile/Containers/Shared/AppGroup",
+    @"/private/var/containers/Data/System",
+};
 
-@implementation WQFabTarget
+static void WQInstallFavorites(void) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSDictionary *all = [defaults dictionaryRepresentation];
+    NSMutableString *report = [NSMutableString string];
 
-- (void)tap {
-    UIViewController *top = WQTopController();
-    if (top == nil || top.view.window == nil) return;
-    WQAppsController *vc = [[WQAppsController alloc] initWithStyle:UITableViewStylePlain];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    [top presentViewController:nav animated:YES completion:nil];
-}
+    for (NSString *key in all) {
+        NSString *lower = key.lowercaseString;
+        BOOL looksLikeFavorites = ([lower containsString:@"bookmark"] ||
+                                   [lower containsString:@"favorite"] ||
+                                   [lower containsString:@"star"] ||
+                                   [lower containsString:@"collect"]);
+        if (!looksLikeFavorites) continue;
 
-- (void)pan:(UIPanGestureRecognizer *)gesture {
-    UIView *view = gesture.view;
-    if (view == nil) return;
-    CGPoint delta = [gesture translationInView:view.superview];
-    view.center = CGPointMake(view.center.x + delta.x, view.center.y + delta.y);
-    [gesture setTranslation:CGPointZero inView:view.superview];
-}
+        id value = all[key];
+        [report appendFormat:@"found %@ = %@\n", key, [value description]];
 
-@end
+        if (![value isKindOfClass:[NSArray class]]) continue;
 
-static void WQInstallFab(void) {
-    if (gFab != nil) return;
-    UIWindow *window = WQKeyWindow();
-    if (window == nil) return;
-
-    if (gFabTarget == nil) {
-        gFabTarget = [WQFabTarget new];
+        NSMutableArray *updated = [NSMutableArray arrayWithArray:value];
+        for (int i = 0; i < 2; i++) {
+            NSString *wanted = kFavoritePaths[i];
+            if (![updated containsObject:wanted]) {
+                [updated addObject:wanted];
+            }
+        }
+        [defaults setObject:updated forKey:key];
+        [report appendFormat:@"wrote %@ (%lu entries)\n", key, (unsigned long)updated.count];
     }
 
-    gFab = [UIButton buttonWithType:UIButtonTypeCustom];
-    gFab.frame = CGRectMake(14, 150, 54, 54);
-    gFab.layer.cornerRadius = 27;
-    gFab.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
-    [gFab setTitle:@"容器" forState:UIControlStateNormal];
-    [gFab setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    gFab.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    [gFab addTarget:gFabTarget action:@selector(tap) forControlEvents:UIControlEventTouchUpInside];
-    [gFab addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:gFabTarget
-                                                                     action:@selector(pan:)]];
-    [window addSubview:gFab];
+    [defaults synchronize];
+
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count > 0) {
+        NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
+        NSString *head = [NSString stringWithFormat:@"group %@\nroot %@\nhandles %@\n",
+                          gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-"];
+        [[head stringByAppendingString:report]
+            writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
 }
 
 __attribute__((constructor))
@@ -704,30 +710,7 @@ static void FilzaWQInit(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         WQGrantAll();
-        [UIApplication sharedApplication].applicationIconBadgeNumber = 1;
-
-        // No automatic sheet: Filza's own browser is the main surface. A small
-        // floating button opens the container list on demand.
-        WQInstallFab();
-
-        // Retry for a minute: Filza shows its own launch UI first, and a single
-        // attempt after a fixed delay silently gives up when that is on screen.
-        [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
-            WQSweepAlerts(WQKeyWindow().rootViewController);
-
-            if (gFab == nil || gFab.superview == nil) {
-                WQInstallFab();
-            } else {
-                [timer invalidate];
-            }
-        }];
-
-        [[NSNotificationCenter defaultCenter]
-            addObserverForName:UIApplicationDidBecomeActiveNotification
-                        object:nil
-                         queue:[NSOperationQueue mainQueue]
-                    usingBlock:^(NSNotification *note) {
-            WQGrantAll();
-        }];
+        WQInstallFavorites();
+        [UIApplication sharedApplication].applicationIconBadgeNumber = 0;
     });
 }
