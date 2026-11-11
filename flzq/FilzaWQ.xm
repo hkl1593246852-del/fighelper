@@ -663,48 +663,57 @@ static NSString *const kFavoritePaths[2] = {
 };
 
 static void WQInstallFavorites(void) {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSDictionary *all = [defaults dictionaryRepresentation];
-    NSMutableString *report = [NSMutableString string];
+    Class prefsClass = NSClassFromString(@"TGPreferences");
+    if (prefsClass == nil) return;
 
-    [report appendString:@"== defaults keys ==\n"];
-    NSArray *sortedKeys = [[all allKeys] sortedArrayUsingSelector:@selector(compare:)];
-    for (NSString *key in sortedKeys) {
-        id value = all[key];
-        NSString *desc = [value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSString class]]
-            ? [value description]
-            : [NSString stringWithFormat:@"<%@>", NSStringFromClass([value class])];
-        if (desc.length > 400) desc = [desc substringToIndex:400];
-        [report appendFormat:@"%@ = %@\n", key, desc];
+    SEL sharedSel = NSSelectorFromString(@"sharedInstance");
+    id prefs = [prefsClass respondsToSelector:sharedSel]
+        ? ((id (*)(id, SEL))objc_msgSend)(prefsClass, sharedSel)
+        : nil;
+    if (prefs == nil) return;
+
+    // Filza keeps its sidebar in TGPreferences.favoritedLinks; NSUserDefaults has
+    // nothing to do with it.
+    SEL linksSel = NSSelectorFromString(@"favoritedLinks");
+    NSArray *existing = [prefs respondsToSelector:linksSel]
+        ? ((id (*)(id, SEL))objc_msgSend)(prefs, linksSel)
+        : nil;
+
+    NSMutableSet<NSString *> *known = [NSMutableSet set];
+    for (id item in ([existing isKindOfClass:[NSArray class]] ? existing : @[])) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        NSString *path = item[@"path"];
+        if (path.length > 0) [known addObject:path];
     }
 
-    // Filza may store its sidebar in one of these; writing all of them is harmless
-    // and the log above tells us which one it actually reads.
-    NSArray *candidates = @[@"bookmarks", @"favorites", @"favoritePaths", @"starredPaths",
-                            @"savedPaths", @"collections", @"shortcuts", @"quickAccess"];
-    for (NSString *key in candidates) {
-        id existing = [defaults objectForKey:key];
-        NSMutableArray *list = [NSMutableArray array];
-        if ([existing isKindOfClass:[NSArray class]]) {
-            [list addObjectsFromArray:existing];
-        }
-        for (int i = 0; i < 2; i++) {
-            if (![list containsObject:kFavoritePaths[i]]) {
-                [list addObject:kFavoritePaths[i]];
-            }
-        }
-        [defaults setObject:list forKey:key];
-        [report appendFormat:@"wrote %@ (%lu)\n", key, (unsigned long)list.count];
+    NSArray *wanted = @[
+        @{ @"name": @"WQ · App Groups",
+           @"path": @"/private/var/mobile/Containers/Shared/AppGroup" },
+        @{ @"name": @"WQ · System Data",
+           @"path": @"/private/var/containers/Data/System" },
+    ];
+
+    SEL addSel = NSSelectorFromString(@"addItemToFavoritedLinks:");
+    NSUInteger added = 0;
+    for (NSDictionary *entry in wanted) {
+        if ([known containsObject:entry[@"path"]]) continue;
+        if (![prefs respondsToSelector:addSel]) break;
+        ((void (*)(id, SEL, id))objc_msgSend)(prefs, addSel, entry);
+        added++;
     }
-    [defaults synchronize];
+
+    if (added > 0 && [prefs respondsToSelector:NSSelectorFromString(@"saveFavoritedLinks")]) {
+        ((void (*)(id, SEL))objc_msgSend)(prefs, NSSelectorFromString(@"saveFavoritedLinks"));
+    }
 
     NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (docs.count > 0) {
         NSString *file = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"filzawq.log"];
-        NSString *head = [NSString stringWithFormat:@"group %@\nroot %@\nhandles %@\n",
-                          gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-"];
-        [[head stringByAppendingString:report]
-            writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString *text = [NSString stringWithFormat:
+            @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n",
+            gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-",
+            prefs != nil ? @"ok" : @"nil", (unsigned long)added];
+        [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
 }
 
