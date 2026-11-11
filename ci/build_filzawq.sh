@@ -70,6 +70,8 @@ echo "==> Staging tweak project"
 mkdir -p "$WORK/proj"
 cp "$ROOT/flzq/FilzaWQ.xm" "$WORK/proj/"
 cp "$ROOT/flzq/Wq.h"       "$WORK/proj/"
+cp "$ROOT/flzq/Mcm.h"      "$WORK/proj/"
+cp "$ROOT/flzq/Mcm.m"      "$WORK/proj/"
 cp "$ROOT/flz/Wq.m"        "$WORK/proj/"
 
 REEXPORT=""
@@ -83,7 +85,7 @@ INSTALL_TARGET_PROCESSES = Filza
 include \$(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = FilzaWQ
-FilzaWQ_FILES = FilzaWQ.xm Wq.m
+FilzaWQ_FILES = FilzaWQ.xm Wq.m Mcm.m
 FilzaWQ_CFLAGS = -fobjc-arc -I\$(THEOS_PROJECT_DIR)
 FilzaWQ_FRAMEWORKS = Foundation UIKit
 FilzaWQ_LDFLAGS = -Wl,-install_name,$INSTALL_NAME $REEXPORT
