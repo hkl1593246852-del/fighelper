@@ -1,0 +1,34 @@
+name: renamer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "flzq/Renamer.m"
+      - ".github/workflows/renamer.yml"
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile the renamer dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang \
+            -dynamiclib -arch arm64e -arch arm64 \
+            -miphoneos-version-min=15.0 \
+            -isysroot "$SDK" \
+            -fobjc-arc -O2 \
+            -framework Foundation \
+            -install_name "@executable_path/Frameworks/FilzaWQRenamer.dylib" \
+            -o FilzaWQRenamer.dylib flzq/Renamer.m
+          lipo -info FilzaWQRenamer.dylib
+          ls -l FilzaWQRenamer.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renamer-dylib
+          path: FilzaWQRenamer.dylib
