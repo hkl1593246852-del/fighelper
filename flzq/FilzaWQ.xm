@@ -56,6 +56,7 @@ static NSInteger gPerContainerFound;
 static NSInteger gPerContainerOK;
 
 static void WQGrantChildren(NSString *root, NSString *group, NSInteger limit);
+static void WQGrantPerContainer(NSString *root);
 
 // ---------------------------------------------------------------------------
 // Entitlements and extensions
