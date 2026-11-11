@@ -712,18 +712,21 @@ __attribute__((constructor))
 static void FilzaWQInit(void) {
     WQInstallAlertFilter();
 
-    // Grants must be in place before Filza paints its sidebar, otherwise the first
-    // listing of a favourite comes back empty and is never retried.
-    WQGrantAll();
-    WQInstallFavorites();
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+    // Granting inside the constructor runs before libxpc and the sandbox are ready
+    // and crashes. didFinishLaunchingNotification is early enough that Filza has
+    // not listed its sidebar yet, but late enough for the container queries.
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidFinishLaunchingNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
         WQGrantAll();
+        WQInstallFavorites();
+
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
             WQSweepAlerts(WQTopController());
         }];
-    });
+    }];
 
     [[NSNotificationCenter defaultCenter]
         addObserverForName:UIApplicationDidBecomeActiveNotification
