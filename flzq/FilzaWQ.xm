@@ -55,6 +55,8 @@ static NSString *gSigningID;
 static NSInteger gPerContainerFound;
 static NSInteger gPerContainerOK;
 static NSMutableArray<NSString *> *gGrantedPaths;
+static NSInteger gNamedLinks;
+static NSInteger gTotalLinks;
 
 static void WQGrantPerContainer(NSString *root);
 
@@ -781,7 +783,22 @@ static NSString *WQBuildLinkFolder(void) {
         }
         if ([fm fileExistsAtPath:link]) continue;
         [fm createSymbolicLinkAtPath:link withDestinationPath:container error:nil];
+        gTotalLinks++;
+        if (names[bid] != nil) gNamedLinks++;
     }
+
+    // A readable manifest makes it easy to check what resolved to what.
+    NSMutableString *manifest = [NSMutableString string];
+    for (NSString *container in gGrantedPaths) {
+        NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+                              [container stringByAppendingPathComponent:
+                               @".com.apple.mobile_container_manager.metadata.plist"]];
+        NSString *bid = meta[@"MCMMetadataIdentifier"] ?: @"?";
+        NSString *shown = names[bid] ?: bid;
+        [manifest appendFormat:@"%@\t%@\t%@\n", shown, bid, container];
+    }
+    [manifest writeToFile:[root stringByAppendingPathComponent:@"_manifest.txt"]
+               atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
     for (NSString *source in sources) {
         NSArray *children = [fm contentsOfDirectoryAtPath:source error:nil];
@@ -909,11 +926,13 @@ static void WQInstallFavorites(void) {
         NSString *text = [NSString stringWithFormat:
             @"group %@\nroot %@\nhandles %@\nTGPreferences %@\nadded %lu\n"
              "mcm identifiers %ld, activated %ld\n"
-             "per-container found %ld, granted %ld\nlinks %@\nsigning %@\n",
+             "per-container found %ld, granted %ld\n"
+             "named %ld/%ld\nlinks %@\nsigning %@\n",
             gGroup ?: @"-", gReadableRoot ?: @"-", gGranted ?: @"-",
             prefs != nil ? @"ok" : @"nil", (unsigned long)added,
             (long)gMcmIDs, (long)gMcmPaths,
             (long)gPerContainerFound, (long)gPerContainerOK,
+            (long)gNamedLinks, (long)gTotalLinks,
             gLinkRoot ?: @"-", gSigningID ?: WQSigningIdentifier()];
         [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
