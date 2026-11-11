@@ -59,7 +59,6 @@ static NSInteger gNamedLinks;
 static NSInteger gTotalLinks;
 static NSInteger gDataPaths;
 static NSInteger gBundlePaths;
-static NSInteger gMetaRead;
 
 static void WQGrantPerContainer(NSString *root);
 
