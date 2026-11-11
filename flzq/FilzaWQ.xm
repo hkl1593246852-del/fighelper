@@ -335,6 +335,111 @@ static NSArray<WQApp *> *WQCollectApps(void) {
     return apps;
 }
 
+@interface WQPathController : UITableViewController
+@property (nonatomic, copy) NSString *path;
+@property (nonatomic, strong) NSArray<NSString *> *names;
+- (instancetype)initWithPath:(NSString *)path;
+@end
+
+@implementation WQPathController
+
+- (instancetype)initWithPath:(NSString *)path {
+    self = [super initWithStyle:UITableViewStylePlain];
+    if (self != nil) {
+        _path = [path copy];
+        _names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:path error:nil];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = self.path.lastPathComponent.length > 0 ? self.path.lastPathComponent : @"/";
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"跳转" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(prompt)];
+}
+
+- (void)prompt {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"跳转到路径"
+                                                              message:self.path
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = self.path;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        NSString *typed = a.textFields.firstObject.text;
+        if (typed.length > 0) {
+            [self.navigationController pushViewController:
+                [[WQPathController alloc] initWithPath:typed] animated:YES];
+        }
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.names.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
+    static NSString *cid = @"wqpath";
+    UITableViewCell *cell = [t dequeueReusableCellWithIdentifier:cid];
+    if (cell == nil) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cid];
+    }
+    NSString *name = self.names[ip.row];
+    NSString *full = [self.path stringByAppendingPathComponent:name];
+    BOOL isDir = NO;
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:full error:nil];
+    [attrs fileType] != NSFileTypeDirectory ? (isDir = NO) : (isDir = YES);
+
+    cell.textLabel.text = name;
+    cell.textLabel.font = [UIFont systemFontOfSize:14];
+    cell.imageView.image = [UIImage systemImageNamed:isDir ? @"folder" : @"doc"];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@  %@",
+        isDir ? @"dir" : @"file",
+        isDir ? @"" : [NSString stringWithFormat:@"%lld", [attrs fileSize]]];
+    cell.detailTextLabel.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [t deselectRowAtIndexPath:ip animated:YES];
+    NSString *name = self.names[ip.row];
+    NSString *full = [self.path stringByAppendingPathComponent:name];
+    BOOL isDir = NO;
+    [[NSFileManager defaultManager] fileExistsAtPath:full isDirectory:&isDir];
+
+    if (isDir) {
+        [self.navigationController pushViewController:[[WQPathController alloc] initWithPath:full]
+                                             animated:YES];
+        return;
+    }
+
+    NSError *err = nil;
+    NSData *data = [NSData dataWithContentsOfFile:full options:0 error:&err];
+    NSString *text = data == nil
+        ? [NSString stringWithFormat:@"read failed: %@", err.localizedDescription]
+        : [NSString stringWithFormat:@"%lu bytes\n\n%@", (unsigned long)data.length,
+           [[NSString alloc] initWithData:[data subdataWithRange:
+               NSMakeRange(0, MIN((NSUInteger)600, data.length))] encoding:NSUTF8StringEncoding]
+               ?: @"<binary>"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:name message:text
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        [UIPasteboard generalPasteboard].string = full;
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+@end
+
 @interface WQAppsController : UITableViewController
 @property (nonatomic, strong) NSArray<WQApp *> *apps;
 @end
@@ -361,10 +466,33 @@ static NSArray<WQApp *> *WQCollectApps(void) {
     self.navigationItem.leftBarButtonItem =
         [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain
                                         target:self action:@selector(close)];
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithTitle:@"跳转" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(gotoPath)];
 }
 
 - (void)close {
     [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)gotoPath {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"打开路径"
+                                                              message:@"支持 /var 与 /private/var"
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"/private/var/mobile/Containers/Shared/AppGroup";
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"打开" style:UIAlertActionStyleDefault
+                                        handler:^(UIAlertAction *x) {
+        NSString *typed = a.textFields.firstObject.text;
+        if (typed.length == 0) return;
+        [self.navigationController pushViewController:[[WQPathController alloc] initWithPath:typed]
+                                             animated:YES];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
