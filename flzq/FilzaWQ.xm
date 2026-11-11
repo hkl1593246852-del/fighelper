@@ -691,8 +691,45 @@ static NSString *WQBuildLinkFolder(void) {
     NSMutableArray<NSString *> *sources = [NSMutableArray arrayWithObject:
         @"/private/var/mobile/Containers/Shared/AppGroup"];
 
-    NSMutableOrderedSet<NSString *> *candidates =
-        [NSMutableOrderedSet orderedSetWithArray:WQMcmIdentifiers(WQMcmClassAppData, 700)];
+    // Enumeration is gated to the caller's own container on iOS 27, but a direct
+    // identifier lookup is a different code path in containermanagerd and may still
+    // answer. Seed the probe with well-known bundle ids plus anything derivable from
+    // the app group containers.
+    NSArray *seeds = @[
+        @"com.apple.Preferences", @"com.apple.MobileSMS", @"com.apple.mobilesafari",
+        @"com.apple.mobileslideshow", @"com.apple.camera", @"com.apple.Music",
+        @"com.apple.AppStore", @"com.apple.springboard", @"com.apple.Photos",
+        @"com.apple.Notes", @"com.apple.mobilemail", @"com.apple.Maps",
+        @"com.apple.Clock", @"com.apple.calculator", @"com.apple.VoiceMemos",
+        @"com.apple.DocumentsApp", @"com.apple.Translate", @"com.apple.measure",
+        @"com.apple.compass", @"com.apple.Magnifier", @"com.apple.facetime",
+        @"com.apple.ContactsUI", @"com.apple.Health", @"com.apple.reminders",
+        @"com.apple.shortcuts", @"com.apple.Passbook", @"com.apple.iBooks",
+        @"com.apple.podcasts", @"com.apple.tv", @"com.apple.Home",
+    ];
+
+    NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSet];
+    for (NSString *seed in seeds) {
+        [candidates addObject:seed];
+    }
+
+    // App group identifiers often carry the owning bundle id after the group prefix.
+    NSFileManager *fmc = [NSFileManager defaultManager];
+    for (NSString *uuid in [fmc contentsOfDirectoryAtPath:
+                            @"/private/var/mobile/Containers/Shared/AppGroup" error:nil]) {
+        NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+            [[@"/private/var/mobile/Containers/Shared/AppGroup" stringByAppendingPathComponent:uuid]
+                stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"]];
+        NSString *ident = meta[@"MCMMetadataIdentifier"];
+        if (![ident isKindOfClass:[NSString class]]) continue;
+        NSRange r = [ident rangeOfString:@"group."];
+        NSString *body = (r.location == 0) ? [ident substringFromIndex:r.length] : ident;
+        if (body.length > 0) [candidates addObject:body];
+    }
+
+    for (NSString *ident in WQMcmIdentifiers(WQMcmClassAppData, 700)) {
+        [candidates addObject:ident];
+    }
 
     // class 2 enumeration only returns our own container on iOS 27, so the rest of
     // the bundle ids come from the LaunchServices store in com.apple.lsd.
