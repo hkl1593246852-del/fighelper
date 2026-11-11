@@ -54,6 +54,7 @@ static NSString *gLinkRoot;
 static NSString *gSigningID;
 static NSInteger gPerContainerFound;
 static NSInteger gPerContainerOK;
+static NSMutableArray<NSString *> *gGrantedPaths;
 
 static void WQGrantPerContainer(NSString *root);
 
@@ -744,6 +745,20 @@ static NSString *WQBuildLinkFolder(void) {
     }
     [sources addObject:@"/private/var/containers/Data/System"];
 
+    // Containers granted individually are not reachable through their parent, so they
+    // are linked directly.
+    for (NSString *container in gGrantedPaths) {
+        NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:
+                              [container stringByAppendingPathComponent:
+                               @".com.apple.mobile_container_manager.metadata.plist"]];
+        NSString *ident = meta[@"MCMMetadataIdentifier"];
+        NSString *name = ident.length > 0 ? [ident lastPathComponent] : [container lastPathComponent];
+        if ([name containsString:@"/"] || name.length == 0) continue;
+        NSString *link = [root stringByAppendingPathComponent:name];
+        if ([fm fileExistsAtPath:link]) continue;
+        [fm createSymbolicLinkAtPath:link withDestinationPath:container error:nil];
+    }
+
     for (NSString *source in sources) {
         NSArray *children = [fm contentsOfDirectoryAtPath:source error:nil];
         for (NSString *uuid in children) {
@@ -791,7 +806,7 @@ static void WQGrantPerContainer(NSString *root) {
 
     NSInteger tried = 0;
     for (NSString *child in children) {
-        if (tried >= 40) break;
+        if (tried >= 400) break;
         tried++;
 
         int64_t h = WQFallbackQuery(child, NO);
@@ -805,6 +820,8 @@ static void WQGrantPerContainer(NSString *root) {
         NSInteger n = WQCountEntries(child, &err);
         if (n > 0) {
             gPerContainerOK++;
+            if (gGrantedPaths == nil) gGrantedPaths = [NSMutableArray array];
+            [gGrantedPaths addObject:child];
             if (gReadableRoot == nil) {
                 gReadableRoot = child;
                 gReadableCount = n;
