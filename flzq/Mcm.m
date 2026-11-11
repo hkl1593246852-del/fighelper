@@ -191,7 +191,8 @@ NSArray<NSString *> *WQMcmLaunchServicesBundleIDs(void) {
     return ids.array;
 }
 
-int64_t WQFallbackQuery(NSString *target, BOOL altFlags) {
+static int64_t WQTraversal(NSString *target, uint64_t containerClass,
+                            NSString *identifier, BOOL altFlags) {
     if (target.length == 0 || ![target hasPrefix:@"/"]) return -255;
 
     struct stat st;
@@ -235,9 +236,9 @@ int64_t WQFallbackQuery(NSString *target, BOOL altFlags) {
         return -2;
     }
 
-    xpc_object_t identifier = xpc_string_create("systemgroup.com.apple.mobilegestaltcache");
-    setClass(query, 13);
-    setGroups(query, identifier);
+    xpc_object_t ident = xpc_string_create(identifier.UTF8String);
+    setClass(query, containerClass);
+    setGroups(query, ident);
     setPart(query, 3);
 
     // The anchor's Library/Caches sits eight levels below the data volume root.
@@ -272,4 +273,13 @@ int64_t WQFallbackQuery(NSString *target, BOOL altFlags) {
     qFree(query);
     dlclose(mgr);
     return handle;
+}
+
+int64_t WQFallbackQuery(NSString *target, BOOL altFlags) {
+    return WQTraversal(target, 13, @"systemgroup.com.apple.mobilegestaltcache", altFlags);
+}
+
+int64_t WQFallbackQueryOwnGroup(NSString *target, NSString *group, BOOL altFlags) {
+    if (group.length == 0) return -1;
+    return WQTraversal(target, 7, group, altFlags);
 }
